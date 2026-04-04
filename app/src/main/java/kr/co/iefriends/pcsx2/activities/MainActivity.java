@@ -38,13 +38,16 @@ import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.CompoundButton;
+import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.Spinner;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.DrawableRes;
@@ -54,15 +57,19 @@ import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.appcompat.widget.PopupMenu;
+import androidx.appcompat.widget.SwitchCompat;
+import androidx.appcompat.widget.TooltipCompat;
+import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.drawable.DrawableCompat;
 import androidx.core.util.Pair;
 import androidx.core.view.GravityCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
-import androidx.core.view.ViewCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
+import androidx.lifecycle.ViewModelProvider;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -72,35 +79,62 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.navigation.NavigationView;
+import com.google.android.material.progressindicator.LinearProgressIndicator;
 import com.google.android.material.slider.Slider;
+import com.google.android.material.snackbar.Snackbar;
 import com.google.android.material.textfield.TextInputEditText;
 import com.google.android.material.textfield.TextInputLayout;
+import com.google.android.material.textview.MaterialTextView;
+
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.text.Collator;
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import java.util.zip.Inflater;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -179,14 +213,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean storagePromptShown = false;
     private String pendingChdCachePath;
     private String pendingChdDisplayName;
-    private Uri pendingChdSourceUri;
-    private String pendingChdSourceSerial;
-    private String pendingChdSourceTitle;
     private AlertDialog dataDirProgressDialog;
     private static final String PREFS = "armsx2";
     private static final String PREF_GAMES_URI = "games_folder_uri";
-    private static final String PREF_CHD_SERIAL_PREFIX = "chd_serial:";
-    private static final String PREF_CHD_TITLE_PREFIX = "chd_title:";
     private static final String PREF_ONBOARDING_COMPLETE = "onboarding_complete";
     private static final String PREF_ONSCREEN_UI_STYLE = "on_screen_ui_style";
     private static final String PREF_UI_SCALE_MULTIPLIER = "onscreen_ui_scale_multiplier";
@@ -227,24 +256,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_SETTINGS_LAYOUT_CHANGED = "SET_LAYOUT_CHANGED";
     public static final String EXTRA_SETTINGS_GPU_PROFILE_OVERRIDE = "SET_GPU_PROFILE_OVERRIDE";
     public static final String EXTRA_SETTINGS_GPU_PROFILE_PERSISTED = "SET_GPU_PROFILE_PERSISTED";
-    
-    private int currentControllerMode = 0; // 0=2 Sticks, 1=1 Stick+Face, 2=D-Pad Only
 
-    private final OnBackPressedCallback onBackPressCallback =
-        new OnBackPressedCallback(false) {
-            @Override
-            public void handleOnBackPressed() {
-                shutdownVmToHome();
-            }
-        };
-    private final OnBackPressedCallback onSearchBackPressCallback =
-        new OnBackPressedCallback(true) {
-            @Override
-            public void handleOnBackPressed() {
-                toggleSearchBar();
-                remove();
-            }
-        };
+    private int currentControllerMode = 0; // 0=2 Sticks, 1=1 Stick+Face, 2=D-Pad Only
 
     private final RetroAchievementsBridge.Listener retroAchievementsListener = new RetroAchievementsBridge.Listener() {
         @Override
@@ -311,72 +324,6 @@ public class MainActivity extends AppCompatActivity {
         return dir;
     }
 
-    @Nullable
-    private static String stripFileExtension(@Nullable String name) {
-        if (TextUtils.isEmpty(name)) {
-            return name;
-        }
-        int dot = name.lastIndexOf('.');
-        return dot > 0 ? name.substring(0, dot) : name;
-    }
-
-    private static String makeChdMetadataKey(@NonNull String prefix, @NonNull Uri uri) {
-        return prefix + uri.toString();
-    }
-
-    private void persistChdMetadata(@Nullable Uri uri, @Nullable String serial, @Nullable String title) {
-        if (uri == null) {
-            return;
-        }
-        android.content.SharedPreferences.Editor editor = getSharedPreferences(PREFS, MODE_PRIVATE).edit();
-        String serialValue = TextUtils.isEmpty(serial) ? null : serial.trim();
-        String titleValue = TextUtils.isEmpty(title) ? null : title.trim();
-        String serialKey = makeChdMetadataKey(PREF_CHD_SERIAL_PREFIX, uri);
-        String titleKey = makeChdMetadataKey(PREF_CHD_TITLE_PREFIX, uri);
-        if (TextUtils.isEmpty(serialValue)) {
-            editor.remove(serialKey);
-        } else {
-            editor.putString(serialKey, serialValue);
-        }
-        if (TextUtils.isEmpty(titleValue)) {
-            editor.remove(titleKey);
-        } else {
-            editor.putString(titleKey, titleValue);
-        }
-        editor.apply();
-    }
-
-    @Nullable
-    private static Pair<String, String> getPersistedChdMetadata(@Nullable Context ctx, @Nullable Uri uri) {
-        if (ctx == null || uri == null) {
-            return null;
-        }
-        Context appCtx = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
-        android.content.SharedPreferences prefs = appCtx.getSharedPreferences(PREFS, MODE_PRIVATE);
-        String serial = prefs.getString(makeChdMetadataKey(PREF_CHD_SERIAL_PREFIX, uri), null);
-        String title = prefs.getString(makeChdMetadataKey(PREF_CHD_TITLE_PREFIX, uri), null);
-        if (TextUtils.isEmpty(serial) && TextUtils.isEmpty(title)) {
-            return null;
-        }
-        return new Pair<>(serial, title);
-    }
-
-    private static boolean isChdEntry(@Nullable Uri uri, @Nullable String title) {
-        String lowerTitle = title != null ? title.toLowerCase(Locale.US) : "";
-        if (lowerTitle.endsWith(".chd")) {
-            return true;
-        }
-        if (uri == null) {
-            return false;
-        }
-        String last = uri.getLastPathSegment();
-        if (last != null && last.toLowerCase(Locale.US).endsWith(".chd")) {
-            return true;
-        }
-        String uriString = uri.toString().toLowerCase(Locale.US);
-        return uriString.endsWith(".chd") || uriString.contains(".chd?");
-    }
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -385,8 +332,8 @@ public class MainActivity extends AppCompatActivity {
         sInstanceRef = new WeakReference<>(this);
         setContentView(R.layout.activity_main);
         disableTouchControls = DeviceProfiles.isTvOrDesktop(this);
-	// Keep screen awake during gameplay
-	getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // Keep screen awake during gameplay
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         if (Build.VERSION.SDK_INT >= 33) {
             try {
@@ -410,61 +357,65 @@ public class MainActivity extends AppCompatActivity {
         applyFullscreen();
         DataDirectoryManager.copyAssetAll(getApplicationContext(), "resources");
 
-    Initialize();
+        Initialize();
 
-    ControllerMappingManager.init(this);
-    refreshVibrationPreference();
+        ControllerMappingManager.init(this);
+        refreshVibrationPreference();
 
-    // Load on-screen controls hide timeout
-    loadHideTimeoutFromPrefs();
+        // Load on-screen controls hide timeout
+        loadHideTimeoutFromPrefs();
 
-    loadOnScreenUiScalePreference();
-    currentOnScreenUiStyle = resolveOnScreenUiStylePreference();
+        loadOnScreenUiScalePreference();
+        currentOnScreenUiStyle = resolveOnScreenUiStylePreference();
         if (!disableTouchControls) {
             makeButtonTouch();
         }
 
-    setSurfaceView(new SDLSurface(this));
+        setSurfaceView(new SDLSurface(this));
 
-        maybeStartOnboardingFlow();
+        // my additions
+        // Only show onboarding if we were NOT launched with a game
+        if (getIntent() == null || getIntent().getData() == null) {
+            maybeStartOnboardingFlow();
+        }
+        //maybeStartOnboardingFlow(); old logic, not mine
 
-    // Cache on-screen pad containers
-    llPadSelectStart = findViewById(R.id.ll_pad_select_start);
-    llPadRight = findViewById(R.id.ll_pad_right);
-    JoystickView joystickLeft = findViewById(R.id.joystick_left);
-    DPadView dpadView = findViewById(R.id.dpad_view);
-    setupInGameDrawer();
-    setupTouchRevealOverlay();
-    // Home UI
-    drawerLayout = findViewById(R.id.drawer_root);
-    homeContainer = findViewById(R.id.home_container);
-    rvGames = findViewById(R.id.rv_games);
-    emptyContainer = findViewById(R.id.empty_container);
-    tvEmpty = findViewById(R.id.tv_empty);
-    etSearch = findViewById(R.id.et_search);
-    bgImage = findViewById(R.id.bg_image);
-    getOnBackPressedDispatcher().addCallback(onBackPressCallback);
-    if (rvGames != null) {
-        gamesGridLayoutManager = new GridLayoutManager(this, getGameGridSpanCount());
-        rvGames.setLayoutManager(gamesGridLayoutManager);
-        gamesAdapter = new GamesAdapter(new ArrayList<>(), entry -> onGameSelected(entry));
-        rvGames.setAdapter(gamesAdapter);
-        // Controller navigation
-    rvGames.setFocusable(true);
-    rvGames.setFocusableInTouchMode(true);
-        rvGames.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-        gameSpacingDecoration = new SpacingDecoration(getResources().getDimensionPixelSize(R.dimen.game_selector_tile_spacing));
-        rvGames.addItemDecoration(gameSpacingDecoration);
-        rvGames.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus && gamesAdapter.getItemCount() > 0) {
-                rvGames.post(() -> {
-                    RecyclerView.ViewHolder vh = rvGames.findViewHolderForAdapterPosition(0);
-                    if (vh != null) vh.itemView.requestFocus();
-                });
-            }
-        });
-        applyGameGridConfig();
-    }
+        // Cache on-screen pad containers
+        llPadSelectStart = findViewById(R.id.ll_pad_select_start);
+        llPadRight = findViewById(R.id.ll_pad_right);
+        JoystickView joystickLeft = findViewById(R.id.joystick_left);
+        DPadView dpadView = findViewById(R.id.dpad_view);
+        setupInGameDrawer();
+        setupTouchRevealOverlay();
+        // Home UI
+        drawerLayout = findViewById(R.id.drawer_root);
+        homeContainer = findViewById(R.id.home_container);
+        rvGames = findViewById(R.id.rv_games);
+        emptyContainer = findViewById(R.id.empty_container);
+        tvEmpty = findViewById(R.id.tv_empty);
+        etSearch = findViewById(R.id.et_search);
+        bgImage = findViewById(R.id.bg_image);
+        if (rvGames != null) {
+            gamesGridLayoutManager = new GridLayoutManager(this, getGameGridSpanCount());
+            rvGames.setLayoutManager(gamesGridLayoutManager);
+            gamesAdapter = new GamesAdapter(new ArrayList<>(), entry -> onGameSelected(entry));
+            rvGames.setAdapter(gamesAdapter);
+            // Controller navigation
+            rvGames.setFocusable(true);
+            rvGames.setFocusableInTouchMode(true);
+            rvGames.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            gameSpacingDecoration = new SpacingDecoration(getResources().getDimensionPixelSize(R.dimen.game_selector_tile_spacing));
+            rvGames.addItemDecoration(gameSpacingDecoration);
+            rvGames.setOnFocusChangeListener((v, hasFocus) -> {
+                if (hasFocus && gamesAdapter.getItemCount() > 0) {
+                    rvGames.post(() -> {
+                        RecyclerView.ViewHolder vh = rvGames.findViewHolderForAdapterPosition(0);
+                        if (vh != null) vh.itemView.requestFocus();
+                    });
+                }
+            });
+            applyGameGridConfig();
+        }
         enforceTouchControlsPolicy();
         // Search text change -> filter
         if (etSearch != null) {
@@ -476,7 +427,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
         }
-        // FAB actions: convert ISO to CHD 
+        // FAB actions: convert ISO to CHD
         com.google.android.material.floatingactionbutton.FloatingActionButton fab = findViewById(R.id.fab_actions);
         if (fab != null) {
             fab.setOnClickListener(v -> {
@@ -497,10 +448,10 @@ public class MainActivity extends AppCompatActivity {
         androidx.appcompat.widget.Toolbar toolbar = findViewById(R.id.toolbar);
         if (toolbar != null) {
             String displayName = DeviceProfiles.getProductDisplayName(this, getString(R.string.app_name));
-            toolbar.setTitle(getString(R.string.home_game_selector_title_format, displayName));
+            toolbar.setTitle(displayName + " Game Selector");
             try {
                 androidx.appcompat.graphics.drawable.DrawerArrowDrawable dd = new androidx.appcompat.graphics.drawable.DrawerArrowDrawable(this);
-                dd.setProgress(0f); 
+                dd.setProgress(0f);
                 toolbar.setNavigationIcon(dd);
             } catch (Throwable ignored) {}
             toolbar.setNavigationOnClickListener(v -> {
@@ -546,7 +497,7 @@ public class MainActivity extends AppCompatActivity {
                             Class<?> rnClass = Class.forName("kr.co.iefriends.pcsx2.RNActivity");
                             startActivity(new Intent(this, rnClass));
                         } catch (Throwable t) {
-                            try { Toast.makeText(this, R.string.home_react_native_unavailable, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
+                            try { Toast.makeText(this, "React Native screen unavailable", Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
                         }
                         return true;
                     }
@@ -554,7 +505,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             } catch (Throwable ignored) {}
         }
-    // Navigation drawer menus
+        // Navigation drawer menus
         NavigationView navStart = findViewById(R.id.nav_view_start);
         NavigationView.OnNavigationItemSelectedListener listener = item -> {
             int id = item.getItemId();
@@ -567,74 +518,74 @@ public class MainActivity extends AppCompatActivity {
                 startActivityForResult(si, 7722);
             } else if (id == R.id.menu_choose_folder) {
                 pickGamesFolder();
-        } else if (id == R.id.menu_refresh) {
-            if (gamesFolderUri != null) scanGamesFolder(gamesFolderUri);
-            else try { Toast.makeText(this, R.string.home_choose_folder_first, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
-        } else if (id == R.id.menu_covers) {
-            promptForCoversUrl();
-        } else if (id == R.id.menu_clear_cover_url) {
-            setCoversUrlTemplate("");
-            try { Toast.makeText(this, R.string.home_cover_url_cleared, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
-            if (gamesFolderUri != null) scanGamesFolder(gamesFolderUri);
-        } else if (id == R.id.menu_bg_landscape) {
-            pickBackgroundImage(false);
-        } else if (id == R.id.menu_bg_portrait) {
-            pickBackgroundImage(true);
-        } else if (id == R.id.menu_bg_clear) {
-            clearBackgroundImages();
-        }
-        if (drawerLayout != null) drawerLayout.closeDrawers();
-        return true;
-    };
-    if (navStart != null) navStart.setNavigationItemSelectedListener(listener);
-    try { if (drawerLayout != null) drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED, GravityCompat.END); } catch (Throwable ignored) {}
-
-    try {
-        if (navStart != null && navStart.getHeaderCount() > 0) {
-            View header = navStart.getHeaderView(0);
-            View img = header.findViewById(R.id.header_image);
-            View imgBlur = header.findViewById(R.id.header_image_blur);
-            android.graphics.Bitmap bmp = loadHeaderBitmapFromAssets();
-            android.graphics.Bitmap blurBmp = loadHeaderBlurBitmapFromAssets();
-            if (img instanceof android.widget.ImageView && bmp != null) {
-                ((android.widget.ImageView) img).setImageBitmap(bmp);
+            } else if (id == R.id.menu_refresh) {
+                if (gamesFolderUri != null) scanGamesFolder(gamesFolderUri);
+                else try { Toast.makeText(this, "Choose a games folder first", Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
+            } else if (id == R.id.menu_covers) {
+                promptForCoversUrl();
+            } else if (id == R.id.menu_clear_cover_url) {
+                setCoversUrlTemplate("");
+                try { Toast.makeText(this, "Cover URL cleared.", Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
+                if (gamesFolderUri != null) scanGamesFolder(gamesFolderUri);
+            } else if (id == R.id.menu_bg_landscape) {
+                pickBackgroundImage(false);
+            } else if (id == R.id.menu_bg_portrait) {
+                pickBackgroundImage(true);
+            } else if (id == R.id.menu_bg_clear) {
+                clearBackgroundImages();
             }
-            android.graphics.Bitmap useForBlur = blurBmp != null ? blurBmp : bmp;
-            if (imgBlur instanceof android.widget.ImageView && useForBlur != null) {
-                ((android.widget.ImageView) imgBlur).setImageBitmap(useForBlur);
-                if (android.os.Build.VERSION.SDK_INT >= 31) {
-                    try {
-                        imgBlur.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(18f, 18f, android.graphics.Shader.TileMode.CLAMP));
-                    } catch (Throwable ignored) {}
+            if (drawerLayout != null) drawerLayout.closeDrawers();
+            return true;
+        };
+        if (navStart != null) navStart.setNavigationItemSelectedListener(listener);
+        try { if (drawerLayout != null) drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED, GravityCompat.END); } catch (Throwable ignored) {}
+
+        try {
+            if (navStart != null && navStart.getHeaderCount() > 0) {
+                View header = navStart.getHeaderView(0);
+                View img = header.findViewById(R.id.header_image);
+                View imgBlur = header.findViewById(R.id.header_image_blur);
+                android.graphics.Bitmap bmp = loadHeaderBitmapFromAssets();
+                android.graphics.Bitmap blurBmp = loadHeaderBlurBitmapFromAssets();
+                if (img instanceof android.widget.ImageView && bmp != null) {
+                    ((android.widget.ImageView) img).setImageBitmap(bmp);
+                }
+                android.graphics.Bitmap useForBlur = blurBmp != null ? blurBmp : bmp;
+                if (imgBlur instanceof android.widget.ImageView && useForBlur != null) {
+                    ((android.widget.ImageView) imgBlur).setImageBitmap(useForBlur);
+                    if (android.os.Build.VERSION.SDK_INT >= 31) {
+                        try {
+                            imgBlur.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(18f, 18f, android.graphics.Shader.TileMode.CLAMP));
+                        } catch (Throwable ignored) {}
+                    }
                 }
             }
-        }
-    } catch (Throwable ignored) {}
-
-    showHome(true);
-    if (tvEmpty != null) tvEmpty.setVisibility(View.VISIBLE);
-
-    try {
-        android.content.SharedPreferences sp = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String saved = sp.getString(PREF_GAMES_URI, null);
-        if (saved != null) {
-            gamesFolderUri = Uri.parse(saved);
-            scanGamesFolder(gamesFolderUri);
-        }
-        applySavedBackground();
-    } catch (Throwable ignored) {}
-
-    boolean handledLaunch = false;
-    try {
-        handledLaunch = handleLaunchIntent(getIntent());
-    } catch (Throwable ignored) {}
-    if (!handledLaunch) {
-        try {
-            if (getIntent() != null && getIntent().getBooleanExtra("BOOT_BIOS", false)) {
-                bootBios();
-            }
         } catch (Throwable ignored) {}
-    }
+
+        showHome(true);
+        if (tvEmpty != null) tvEmpty.setVisibility(View.VISIBLE);
+
+        try {
+            android.content.SharedPreferences sp = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            String saved = sp.getString(PREF_GAMES_URI, null);
+            if (saved != null) {
+                gamesFolderUri = Uri.parse(saved);
+                scanGamesFolder(gamesFolderUri);
+            }
+            applySavedBackground();
+        } catch (Throwable ignored) {}
+
+        boolean handledLaunch = false;
+        try {
+            handledLaunch = handleLaunchIntent(getIntent());
+        } catch (Throwable ignored) {}
+        if (!handledLaunch) {
+            try {
+                if (getIntent() != null && getIntent().getBooleanExtra("BOOT_BIOS", false)) {
+                    bootBios();
+                }
+            } catch (Throwable ignored) {}
+        }
     }
     @Override
     protected void onNewIntent(Intent intent) {
@@ -727,14 +678,12 @@ public class MainActivity extends AppCompatActivity {
         boolean nowVisible = etSearch.getVisibility() != View.VISIBLE;
         etSearch.setVisibility(nowVisible ? View.VISIBLE : View.GONE);
         if (nowVisible) {
-            getOnBackPressedDispatcher().addCallback(onSearchBackPressCallback);
             etSearch.requestFocus();
             try {
                 android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
                 if (imm != null) imm.showSoftInput(etSearch, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
             } catch (Throwable ignored) {}
         } else {
-            onSearchBackPressCallback.remove();
             try {
                 android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
                 if (imm != null) imm.hideSoftInputFromWindow(etSearch.getWindowToken(), 0);
@@ -745,7 +694,7 @@ public class MainActivity extends AppCompatActivity {
 
     // region Covers
     private static final String PREF_COVERS_URL = "covers_url_template";
-    private static final String PREF_MANUAL_COVER_PREFIX = "manual_cover:"; 
+    private static final String PREF_MANUAL_COVER_PREFIX = "manual_cover:";
     private String getCoversUrlTemplate() {
         return getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_COVERS_URL, "");
     }
@@ -834,16 +783,16 @@ public class MainActivity extends AppCompatActivity {
             coverPrefetchRunning = true;
         }
         try { Toast.makeText(this, R.string.cover_prefetch_start, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
-            new Thread(() -> {
-                int downloaded = 0;
-                try {
-                    for (Uri root : roots) {
+        new Thread(() -> {
+            int downloaded = 0;
+            try {
+                for (Uri root : roots) {
                     downloaded += prefetchCoversForRoot(root, template, cacheDir);
-                    }
-                } finally {
-                    synchronized (coverPrefetchLock) {
-                        coverPrefetchRunning = false;
-                    }
+                }
+            } finally {
+                synchronized (coverPrefetchLock) {
+                    coverPrefetchRunning = false;
+                }
             }
             final int total = downloaded;
             runOnUiThread(() -> {
@@ -890,18 +839,6 @@ public class MainActivity extends AppCompatActivity {
                 continue;
             }
             try {
-                if (isChdEntry(ge.uri, ge.title)) {
-                    Pair<String, String> cached = getPersistedChdMetadata(this, ge.uri);
-                    if (cached != null) {
-                        if (TextUtils.isEmpty(ge.serial) && !TextUtils.isEmpty(cached.first)) {
-                            ge.serial = cached.first;
-                        }
-                        if (TextUtils.isEmpty(ge.gameTitle) && !TextUtils.isEmpty(cached.second)) {
-                            ge.gameTitle = cached.second;
-                        }
-                    }
-                    continue;
-                }
                 boolean needsSerial = TextUtils.isEmpty(ge.serial);
                 boolean needsTitle = TextUtils.isEmpty(ge.gameTitle);
                 if (!needsSerial && !needsTitle) {
@@ -997,21 +934,12 @@ public class MainActivity extends AppCompatActivity {
         String b0 = base.trim();
         if (!b0.isEmpty()) set.add(b0);
         String b1 = b0.replace('_', ' ').trim(); if (!b1.isEmpty()) set.add(b1);
-        String b1Sanitized = b1
-                .replaceAll("\\[[^\\]]*\\]", " ")
-                .replaceAll("\\([^\\)]*\\)", " ")
-                .replaceAll("\\{[^\\}]*\\}", " ")
-                .replaceAll("\\s+", " ")
-                .trim();
-        if (!b1Sanitized.isEmpty()) set.add(b1Sanitized);
         String b2 = b1.replace(":", " - ").replaceAll("\\s+", " ").trim(); if (!b2.isEmpty()) set.add(b2);
         try {
             String b3 = b1.replaceAll("(?i)(?<=\\w) \\–|\\u2014| - (?=\\w)", ": ");
             b3 = b3.replace(" - ", ": ");
             b3 = b3.replaceAll("\\s+", " ").trim();
             if (!b3.isEmpty()) set.add(b3);
-            String b4 = b1Sanitized.replace(" - ", ": ").replaceAll("\\s+", " ").trim();
-            if (!b4.isEmpty()) set.add(b4);
         } catch (Throwable ignored) {}
         return new ArrayList<>(set);
     }
@@ -1269,12 +1197,6 @@ public class MainActivity extends AppCompatActivity {
                 pendingChdCachePath = null;
                 String displayName = pendingChdDisplayName;
                 pendingChdDisplayName = null;
-                Uri sourceUri = pendingChdSourceUri;
-                pendingChdSourceUri = null;
-                String sourceSerial = pendingChdSourceSerial;
-                pendingChdSourceSerial = null;
-                String sourceTitle = pendingChdSourceTitle;
-                pendingChdSourceTitle = null;
 
                 if (!chdFile.exists()) {
                     android.util.Log.e("ARMSX2_CHD", "Pending CHD file missing from cache: " + cachePath);
@@ -1287,11 +1209,6 @@ public class MainActivity extends AppCompatActivity {
                     android.util.Log.d("ARMSX2_CHD", "User selected destination URI: " + destinationUri);
                     boolean saved = saveChdToUri(chdFile, destinationUri);
                     if (saved) {
-                        String destinationDisplayName = queryOpenableDisplayName(destinationUri);
-                        String persistedTitle = !TextUtils.isEmpty(sourceTitle) ? sourceTitle : stripFileExtension(destinationDisplayName);
-                        persistChdMetadata(destinationUri, sourceSerial, persistedTitle);
-                        carryCoverAssociationAfterChdSave(
-                                sourceUri, destinationUri, displayName, destinationDisplayName, sourceSerial, persistedTitle);
                         if (!chdFile.delete()) {
                             android.util.Log.w("ARMSX2_CHD", "Failed to delete cached CHD after saving: " + cachePath);
                         } else {
@@ -1307,111 +1224,89 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
 
-    private void carryCoverAssociationAfterChdSave(@Nullable Uri sourceUri,
-                                                   @Nullable Uri destinationUri,
-                                                   @Nullable String sourceDisplayName,
-                                                   @Nullable String destinationDisplayName,
-                                                   @Nullable String sourceSerial,
-                                                   @Nullable String sourceTitle) {
-        if (sourceUri == null || destinationUri == null) {
-            return;
-        }
-
-        String srcName = !TextUtils.isEmpty(sourceDisplayName) ? sourceDisplayName : sourceUri.getLastPathSegment();
-        String dstName = !TextUtils.isEmpty(destinationDisplayName) ? destinationDisplayName : destinationUri.getLastPathSegment();
-        if (TextUtils.isEmpty(srcName)) srcName = "source.iso";
-        if (TextUtils.isEmpty(dstName)) dstName = "destination.chd";
-
-        GameEntry sourceEntry = new GameEntry(srcName, sourceUri);
-        sourceEntry.serial = sourceSerial;
-        sourceEntry.gameTitle = sourceTitle;
-
-        GameEntry destinationEntry = new GameEntry(dstName, destinationUri);
-        destinationEntry.serial = sourceSerial;
-        destinationEntry.gameTitle = sourceTitle;
-
-        String sourceGameKey = gameKeyFromEntry(sourceEntry);
-        String destinationGameKey = gameKeyFromEntry(destinationEntry);
-        if (!TextUtils.isEmpty(sourceGameKey) && !TextUtils.isEmpty(destinationGameKey)
-                && !sourceGameKey.equals(destinationGameKey)) {
-            String manualCoverUri = getManualCoverUri(sourceGameKey);
-            if (!TextUtils.isEmpty(manualCoverUri)) {
-                setManualCoverUri(destinationGameKey, manualCoverUri);
-            }
-        }
-
-        copyCachedCoverBetweenEntries(sourceEntry, destinationEntry);
-    }
-
-    private void copyCachedCoverBetweenEntries(@NonNull GameEntry sourceEntry, @NonNull GameEntry destinationEntry) {
-        File coversDir = getCoversCacheDir();
-        if (coversDir == null) {
-            return;
-        }
-        String sourceBase = computeCoverBaseName(sourceEntry);
-        String destinationBase = computeCoverBaseName(destinationEntry);
-        if (TextUtils.isEmpty(sourceBase) || TextUtils.isEmpty(destinationBase) || sourceBase.equals(destinationBase)) {
-            return;
-        }
-
-        File sourceCover = findExistingCoverFile(coversDir, sourceBase);
-        if (sourceCover == null || !sourceCover.isFile() || sourceCover.length() <= 0L) {
-            return;
-        }
-        if (findExistingCoverFile(coversDir, destinationBase) != null) {
-            return;
-        }
-
-        String sourceName = sourceCover.getName();
-        int extIndex = sourceName.lastIndexOf('.');
-        String ext = extIndex >= 0 ? sourceName.substring(extIndex) : ".jpg";
-        File destinationCover = new File(coversDir, destinationBase + ext);
-        try (FileInputStream in = new FileInputStream(sourceCover);
-             FileOutputStream out = new FileOutputStream(destinationCover)) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) != -1) {
-                out.write(buffer, 0, read);
-            }
-            out.flush();
-            GamesAdapter.registerCachedCover(destinationEntry, destinationCover);
-        } catch (IOException ignored) {}
-    }
-
-    private void showGameOptionsPopup(View anchorView, GameEntry e) {
+    private void showGameOptionsDialog(GameEntry e) {
         if (e == null) return;
         String key = gameKeyFromEntry(e);
         String existing = getManualCoverUri(key);
-        PopupMenu menu = new PopupMenu(this, anchorView);
-        menu.inflate(R.menu.game_options_menu);
-        MenuItem removeChosenCoverMenuItem = menu.getMenu().findItem(R.id.remove_chosen_cover);
-        removeChosenCoverMenuItem.setVisible(existing != null);
-        menu.setOnMenuItemClickListener(item -> {
-            if (item.getItemId() == R.id.choose_cover) {
-                launchCoverImagePicker(key);
-                return true;
-            }
-            if (item.getItemId() == R.id.remove_chosen_cover) {
+        android.widget.LinearLayout container = new android.widget.LinearLayout(this);
+        container.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        container.setPadding(pad, pad, pad, pad);
+        container.setBackgroundColor(0xEE222222);
+        android.widget.TextView title = new android.widget.TextView(this);
+        title.setText(e.gameTitle != null ? e.gameTitle : e.title);
+        title.setTextColor(0xFFFFFFFF);
+        title.setTextSize(18);
+        title.setPadding(0, 0, 0, pad / 2);
+        container.addView(title);
+
+        float density = getResources().getDisplayMetrics().density;
+        int primary = resolveThemeColor(android.R.attr.colorPrimary);
+        int onPrimary = resolveThemeColor(android.R.attr.textColorPrimary);
+        int surfaceVariant = resolveThemeColor(android.R.attr.colorBackground);
+        int onSurface = resolveThemeColor(android.R.attr.textColorPrimary);
+        int secondary = resolveThemeColor(com.google.android.material.R.attr.colorSecondary);
+        int onSecondary = resolveThemeColor(com.google.android.material.R.attr.colorOnSecondary);
+        int spacing = (int) (8f * density);
+
+        MaterialButton pick = new MaterialButton(this);
+        LinearLayout.LayoutParams pickParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        pickParams.topMargin = spacing;
+        pick.setLayoutParams(pickParams);
+        pick.setText(getString(R.string.cover_action_choose));
+        pick.setBackgroundTintList(ColorStateList.valueOf(primary));
+        pick.setTextColor(onPrimary);
+        container.addView(pick);
+
+        MaterialAlertDialogBuilder mBuilder = new MaterialAlertDialogBuilder(this)
+                .setView(container)
+                .setNegativeButton(android.R.string.cancel, (d, w) -> d.dismiss());
+        AlertDialog dlg = mBuilder.create();
+
+        pick.setOnClickListener(v -> {
+            dlg.dismiss();
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("image/*");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            pendingManualCoverGameKey = key;
+            startActivityResultPickImage.launch(intent);
+        });
+
+        if (existing != null) {
+            MaterialButton remove = new MaterialButton(this);
+            LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            removeParams.topMargin = spacing;
+            remove.setLayoutParams(removeParams);
+            remove.setText(getString(R.string.cover_action_remove));
+            remove.setBackgroundTintList(ColorStateList.valueOf(surfaceVariant));
+            remove.setTextColor(onSurface);
+            container.addView(remove);
+            remove.setOnClickListener(v -> {
+                dlg.dismiss();
                 removeManualCoverUri(key);
                 if (gamesFolderUri != null) scanGamesFolder(gamesFolderUri);
-                return true;
-            }
-            if (item.getItemId() == R.id.per_game_settings) {
-                showPerGameSettingsDialog(e);
-                return true;
-            }
-            return false;
-        });
-        menu.show();
-    }
+            });
+        }
 
-    private void launchCoverImagePicker(String key) {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("image/*");
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        pendingManualCoverGameKey = key;
-        startActivityResultPickImage.launch(intent);
+        MaterialButton perGame = new MaterialButton(this);
+        LinearLayout.LayoutParams perGameParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        perGameParams.topMargin = spacing * 2;
+        perGame.setLayoutParams(perGameParams);
+        perGame.setText(getString(R.string.per_game_settings_button));
+        perGame.setBackgroundTintList(ColorStateList.valueOf(secondary));
+        perGame.setTextColor(onSecondary);
+        container.addView(perGame);
+
+        perGame.setOnClickListener(v -> {
+            dlg.dismiss();
+            showPerGameSettingsDialog(e);
+        });
+
+        dlg.show();
     }
 
     private void showPerGameSettingsDialog(GameEntry entry) {
@@ -1805,7 +1700,7 @@ public class MainActivity extends AppCompatActivity {
 
     // endregion Manual cover selection
 
-    
+
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
@@ -1820,53 +1715,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void applyFullscreen() {
-        // 1️⃣ Determine if emulation UI is visible
-        boolean emulationVisible = !isHomeVisible();
-        boolean fullscreen = emulationVisible || isFullscreenUiModeEnabled();
-
-        // 2️⃣ Edge-to-edge: disable system padding
-        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-
-        // 3️⃣ Handle display cutout (notch/punch-hole)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            WindowManager.LayoutParams attrs = getWindow().getAttributes();
-            attrs.layoutInDisplayCutoutMode = emulationVisible
-                    ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                    : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
-            getWindow().setAttributes(attrs);
-        }
-
-        // 4️⃣ Get decor view
+        boolean fullscreen = !isHomeVisible();
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), !fullscreen);
         View decorView = getWindow().getDecorView();
-        applyLegacyImmersiveFlags(decorView, fullscreen);
-
-        // 5️⃣ Disable contrast enforcement on Android Q+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            getWindow().setNavigationBarContrastEnforced(false);
-            getWindow().setStatusBarContrastEnforced(false);
-        }
-
-        // 6️⃣ Hide system bars
         WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(getWindow(), decorView);
         if (fullscreen) {
-            controller.hide(WindowInsetsCompat.Type.systemBars()); // status + nav bars
+            controller.hide(WindowInsetsCompat.Type.statusBars() | WindowInsetsCompat.Type.navigationBars());
             controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-        } else {
-            controller.show(WindowInsetsCompat.Type.systemBars());
-            controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_DEFAULT);
-        }
-
-        // 7️⃣ Consume all insets on root layout so no padding is added
-        View root = findViewById(R.id.in_game_root);
-        if (root != null) {
-            ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
-                v.setPadding(0, 0, 0, 0); // remove any padding for status/nav/cutout
-                return WindowInsetsCompat.CONSUMED;
-            });
-        }
-
-        // 8️⃣ Optional: touch listener for on-screen controls
-        if (fullscreen) {
             decorView.setOnTouchListener((v, e) -> {
                 if (disableTouchControls) return false;
                 if (e.getAction() == MotionEvent.ACTION_DOWN || e.getAction() == MotionEvent.ACTION_MOVE) {
@@ -1881,89 +1736,53 @@ public class MainActivity extends AppCompatActivity {
                 return false;
             });
         } else {
+            controller.show(WindowInsetsCompat.Type.statusBars() | WindowInsetsCompat.Type.navigationBars());
+            controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_DEFAULT);
             decorView.setOnTouchListener(null);
         }
-    }
-
-    private boolean isFullscreenUiModeEnabled() {
-        try {
-            String value = NativeApp.getSetting("UI", "EnableFullscreenUI", "bool");
-            if (!TextUtils.isEmpty(value)) {
-                return "true".equalsIgnoreCase(value);
-            }
-        } catch (Exception ignored) {}
-        try {
-            return NativeApp.isFullscreenUIEnabled();
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private void applyDisplayCutoutMode(boolean emulationVisible) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-            return;
-        }
-
-        final WindowManager.LayoutParams attrs = getWindow().getAttributes();
-        final int targetMode;
-        if (!emulationVisible) {
-            targetMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
-        } else if (isDisplayCutoutExpansionEnabled()) {
-            targetMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-        } else {
-            targetMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER;
-        }
-
-        if (attrs.layoutInDisplayCutoutMode != targetMode) {
-            attrs.layoutInDisplayCutoutMode = targetMode;
-            getWindow().setAttributes(attrs);
-        }
-    }
-
-    private boolean isDisplayCutoutExpansionEnabled() {
-        try {
-            String value = NativeApp.getSetting("UI", "ExpandIntoDisplayCutout", "bool");
-            return "true".equalsIgnoreCase(value);
-        } catch (Exception ignored) {
-            return true;
-        }
-    }
-
-    @SuppressWarnings("deprecation")
-    private static void applyLegacyImmersiveFlags(View decorView, boolean fullscreen) {
-        int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-        if (fullscreen) {
-            flags |= View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-        }
-        decorView.setSystemUiVisibility(flags);
     }
 
     public void onSurfaceReady() {
     }
 
     private void ensureBiosPresent() {
-    if (!hasBios()) {
-        Toast.makeText(this, R.string.home_bios_missing_toast, Toast.LENGTH_LONG).show();
-        new MaterialAlertDialogBuilder(this)
-            .setMessage(R.string.home_bios_missing_message)
-            .setCancelable(true)
-            .setNegativeButton(R.string.home_close, (d, w) -> d.dismiss())
-            .setPositiveButton(R.string.onboarding_bios_select, (d, w) -> openBiosPicker())
-            .show();
+        // Cartridge mode: if a game is being launched, skip BIOS picker
+        Intent intent = getIntent();
+        Uri data = intent != null ? intent.getData() : null;
+
+        if (data != null) {
+            // We have a game to boot — assume BIOS is valid
+            if (Build.VERSION.SDK_INT >= 33) {
+                try {
+                    GameManager gm = (GameManager) getSystemService(Context.GAME_SERVICE);
+                    if (gm != null)
+                        gm.setGameState(new GameState(false, GameState.MODE_GAMEPLAY_INTERRUPTIBLE));
+                } catch (Throwable ignored) {}
+            }
+            return;
+        }
+
+        // Normal desktop mode: enforce BIOS selection
+        if (!hasBios()) {
+            Toast.makeText(this, "ARMSX2 no bios found!", Toast.LENGTH_LONG).show();
+            new MaterialAlertDialogBuilder(this)
+                    .setMessage("No PS2 BIOS found. Please choose a BIOS file.")
+                    .setCancelable(true)
+                    .setNegativeButton("Close", (d, w) -> d.dismiss())
+                    .setPositiveButton("Choose BIOS", (d, w) -> openBiosPicker())
+                    .show();
         } else {
             // BIOS is present, signal we’re gameplay-ready.
             if (Build.VERSION.SDK_INT >= 33) {
                 try {
                     GameManager gm = (GameManager) getSystemService(Context.GAME_SERVICE);
-                    if (gm != null) gm.setGameState(new GameState(false, GameState.MODE_GAMEPLAY_INTERRUPTIBLE));
+                    if (gm != null)
+                        gm.setGameState(new GameState(false, GameState.MODE_GAMEPLAY_INTERRUPTIBLE));
                 } catch (Throwable ignored) {}
             }
         }
     }
+
 
     private void openBiosPicker() {
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
@@ -1988,7 +1807,7 @@ public class MainActivity extends AppCompatActivity {
         File biosDir = new File(base, "bios");
         if (!biosDir.exists()) biosDir.mkdirs();
 
-        String outName = "ps2_bios.bin"; 
+        String outName = "ps2_bios.bin";
         File outFile = new File(biosDir, outName);
 
         try (InputStream in = getContentResolver().openInputStream(uri);
@@ -1998,9 +1817,9 @@ public class MainActivity extends AppCompatActivity {
             int n;
             while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
             out.flush();
-            Toast.makeText(this, R.string.onboarding_bios_saved, Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "BIOS saved", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
-            Toast.makeText(this, R.string.onboarding_bios_write_error, Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Failed to save BIOS", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -2049,9 +1868,9 @@ public class MainActivity extends AppCompatActivity {
             int n;
             while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
             out.flush();
-            Toast.makeText(this, getString(R.string.home_bios_imported, outFile.getName()), Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Imported BIOS: " + outFile.getName(), Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
-            Toast.makeText(this, R.string.home_bios_import_failed, Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Failed to import BIOS", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -2080,16 +1899,16 @@ public class MainActivity extends AppCompatActivity {
         } catch (Throwable ignored) {}
 
         MaterialAlertDialogBuilder b = new MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.home_bios_selection_title)
+                .setTitle("BIOS Selection")
                 .setSingleChoiceItems(names, checked, (d, which) -> {
                     try {
                         String path = biosList.get(which).getAbsolutePath();
                         NativeApp.setSetting("Filenames", "BIOS", "string", path);
-                        Toast.makeText(this, getString(R.string.home_bios_current, biosList.get(which).getName()), Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, "Current BIOS: " + biosList.get(which).getName(), Toast.LENGTH_SHORT).show();
                     } catch (Throwable ignored) {}
                 })
-                .setNegativeButton(R.string.home_close, (d, w) -> d.dismiss())
-                .setPositiveButton(R.string.home_import, (d, w) -> openBiosImportForManager());
+                .setNegativeButton("Close", (d, w) -> d.dismiss())
+                .setPositiveButton("Import", (d, w) -> openBiosImportForManager());
         b.show();
     }
 
@@ -2220,7 +2039,7 @@ public class MainActivity extends AppCompatActivity {
         if (btnSettingsDrawer != null) {
             btnSettingsDrawer.setOnClickListener(v -> {
                 closeInGameDrawer();
-                startActivityForResult(new Intent(this, SettingsActivity.class), 7722);
+                startActivity(new Intent(this, SettingsActivity.class));
             });
         }
 
@@ -2589,39 +2408,39 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupDrawerSpinners() {
-		Spinner aspectSpinner = findViewById(R.id.drawer_sp_aspect_ratio);
-		if (aspectSpinner != null) {
-			ArrayAdapter<CharSequence> aspectAdapter = ArrayAdapter.createFromResource(this, R.array.aspect_ratios, android.R.layout.simple_spinner_item);
-			aspectAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-			aspectSpinner.setAdapter(aspectAdapter);
-			final String[] aspectChoices = getResources().getStringArray(R.array.aspect_ratios);
-			int current = 0;
-			try {
-				String aspect = NativeApp.getSetting("EmuCore/GS", "AspectRatio", "string");
-				if (aspect != null && !aspect.isEmpty()) {
-					for (int i = 0; i < aspectChoices.length; i++) {
-						if (aspect.equalsIgnoreCase(aspectChoices[i])) {
-							current = i;
-							break;
-						}
-					}
-				}
-			} catch (Exception ignored) {}
-			if (current < 0 || current >= aspectAdapter.getCount()) current = 0;
-			aspectSpinner.setSelection(current, false);
-			aspectSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-				@Override
-				public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-					if (position < 0 || position >= aspectChoices.length)
-						return;
-					String value = aspectChoices[position];
-					NativeApp.setSetting("EmuCore/GS", "AspectRatio", "string", value);
-					NativeApp.setAspectRatio(position);
-				}
+        Spinner aspectSpinner = findViewById(R.id.drawer_sp_aspect_ratio);
+        if (aspectSpinner != null) {
+            ArrayAdapter<CharSequence> aspectAdapter = ArrayAdapter.createFromResource(this, R.array.aspect_ratios, android.R.layout.simple_spinner_item);
+            aspectAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            aspectSpinner.setAdapter(aspectAdapter);
+            final String[] aspectChoices = getResources().getStringArray(R.array.aspect_ratios);
+            int current = 0;
+            try {
+                String aspect = NativeApp.getSetting("EmuCore/GS", "AspectRatio", "string");
+                if (aspect != null && !aspect.isEmpty()) {
+                    for (int i = 0; i < aspectChoices.length; i++) {
+                        if (aspect.equalsIgnoreCase(aspectChoices[i])) {
+                            current = i;
+                            break;
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+            if (current < 0 || current >= aspectAdapter.getCount()) current = 0;
+            aspectSpinner.setSelection(current, false);
+            aspectSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+                @Override
+                public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                    if (position < 0 || position >= aspectChoices.length)
+                        return;
+                    String value = aspectChoices[position];
+                    NativeApp.setSetting("EmuCore/GS", "AspectRatio", "string", value);
+                    NativeApp.setAspectRatio(position);
+                }
 
-				@Override
-				public void onNothingSelected(AdapterView<?> parent) {
-				}
+                @Override
+                public void onNothingSelected(AdapterView<?> parent) {
+                }
             });
         }
 
@@ -2686,11 +2505,11 @@ public class MainActivity extends AppCompatActivity {
             ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, modes);
             adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
             modeSpinner.setAdapter(adapter);
-            
+
             // Load saved mode (default is 0 = 2 Sticks)
             int savedMode = getSharedPreferences(PREFS, MODE_PRIVATE).getInt("controller_mode", 0);
             modeSpinner.setSelection(savedMode, false);
-            
+
             modeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
                 @Override
                 public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
@@ -2702,104 +2521,104 @@ public class MainActivity extends AppCompatActivity {
                 public void onNothingSelected(AdapterView<?> parent) {
                 }
             });
-            
+
             applyControllerMode(savedMode);
         }
     }
 
     private void applyControllerMode(int mode) {
         currentControllerMode = mode;
-        
+
         JoystickView joystickLeft = findViewById(R.id.joystick_left);
         JoystickView joystickRight = findViewById(R.id.joystick_right);
         DPadView dpadView = findViewById(R.id.dpad_view);
         View llPadRight = findViewById(R.id.ll_pad_right);
-        
+
         if (joystickLeft == null || joystickRight == null || dpadView == null || llPadRight == null) {
             return;
         }
-        
+
         switch (mode) {
-            case 0: // 2 Sticks 
+            case 0: // 2 Sticks
                 joystickLeft.setVisibility(View.VISIBLE);
                 joystickRight.setVisibility(View.VISIBLE);
                 dpadView.setVisibility(View.VISIBLE);
                 llPadRight.setVisibility(View.VISIBLE);
-                
+
                 ViewGroup.LayoutParams leftParams = joystickLeft.getLayoutParams();
                 leftParams.width = dpToPx(140);
                 leftParams.height = dpToPx(140);
                 joystickLeft.setLayoutParams(leftParams);
-                
+
                 ViewGroup.LayoutParams rightParams = joystickRight.getLayoutParams();
                 rightParams.width = dpToPx(140);
                 rightParams.height = dpToPx(140);
                 joystickRight.setLayoutParams(rightParams);
-                
+
                 ViewGroup.LayoutParams dpadParams = dpadView.getLayoutParams();
                 dpadParams.width = dpToPx(105);
                 dpadParams.height = dpToPx(105);
                 dpadView.setLayoutParams(dpadParams);
-                
+
                 llPadRight.setScaleX(1.0f);
                 llPadRight.setScaleY(1.0f);
                 if (llPadRight.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
                     ViewGroup.MarginLayoutParams faceParams = (ViewGroup.MarginLayoutParams) llPadRight.getLayoutParams();
-                    faceParams.bottomMargin = dpToPx(1); 
+                    faceParams.bottomMargin = dpToPx(1);
                     llPadRight.setLayoutParams(faceParams);
                 }
                 faceButtonsBaseScale = 1.0f;
                 break;
-                
-            case 1: // 1 Stick + Face Buttons 
+
+            case 1: // 1 Stick + Face Buttons
                 joystickLeft.setVisibility(View.VISIBLE);
-                joystickRight.setVisibility(View.GONE); 
-                dpadView.setVisibility(View.GONE); 
+                joystickRight.setVisibility(View.GONE);
+                dpadView.setVisibility(View.GONE);
                 llPadRight.setVisibility(View.VISIBLE);
-                
+
                 ViewGroup.LayoutParams leftParams1 = joystickLeft.getLayoutParams();
                 leftParams1.width = dpToPx(140);
                 leftParams1.height = dpToPx(140);
                 joystickLeft.setLayoutParams(leftParams1);
-                
+
                 ViewGroup.LayoutParams dpadParams1 = dpadView.getLayoutParams();
                 dpadParams1.width = dpToPx(105);
                 dpadParams1.height = dpToPx(105);
                 dpadView.setLayoutParams(dpadParams1);
-                
+
                 llPadRight.setScaleX(1.4f);
                 llPadRight.setScaleY(1.4f);
-                
+
                 if (llPadRight.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
                     ViewGroup.MarginLayoutParams faceParams1 = (ViewGroup.MarginLayoutParams) llPadRight.getLayoutParams();
-                    faceParams1.bottomMargin = dpToPx(6) + dpToPx(11); 
+                    faceParams1.bottomMargin = dpToPx(6) + dpToPx(11);
                     llPadRight.setLayoutParams(faceParams1);
                 }
                 faceButtonsBaseScale = 1.4f;
                 break;
-                
-            case 2: // D-Pad Only 
+
+            case 2: // D-Pad Only
                 joystickLeft.setVisibility(View.GONE);
                 joystickRight.setVisibility(View.GONE);
                 dpadView.setVisibility(View.VISIBLE);
                 llPadRight.setVisibility(View.VISIBLE);
-                
+
                 ViewGroup.LayoutParams dpadParams2 = dpadView.getLayoutParams();
                 dpadParams2.width = dpToPx(140);
                 dpadParams2.height = dpToPx(140);
                 dpadView.setLayoutParams(dpadParams2);
-                
+
                 ViewGroup.LayoutParams rightParams2 = joystickRight.getLayoutParams();
                 rightParams2.width = dpToPx(140);
                 rightParams2.height = dpToPx(140);
                 joystickRight.setLayoutParams(rightParams2);
-                
+
                 llPadRight.setScaleX(1.4f);
                 llPadRight.setScaleY(1.4f);
-                
+
                 if (llPadRight.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
                     ViewGroup.MarginLayoutParams faceParams2 = (ViewGroup.MarginLayoutParams) llPadRight.getLayoutParams();
-                    faceParams2.bottomMargin = dpToPx(6) + dpToPx(11); 
+                    faceParams2.bottomMargin = dpToPx(6) + dpToPx(11);
                     llPadRight.setLayoutParams(faceParams2);
                 }
                 faceButtonsBaseScale = 1.4f;
@@ -2817,10 +2636,10 @@ public class MainActivity extends AppCompatActivity {
             swEnableCheats.setChecked(readBoolSetting("EmuCore", "EnableCheats", false));
             swEnableCheats.setOnCheckedChangeListener((buttonView, isChecked) ->
             {
-                    NativeApp.setEnableCheats(isChecked);
-                    try {
-                        DebugLog.d("Cheats", "EnableCheats=" + isChecked);
-                    } catch (Throwable ignored) {}
+                NativeApp.setEnableCheats(isChecked);
+                try {
+                    DebugLog.d("Cheats", "EnableCheats=" + isChecked);
+                } catch (Throwable ignored) {}
             });
         }
 
@@ -2938,24 +2757,24 @@ public class MainActivity extends AppCompatActivity {
 
     private void showGameStateDialog() {
         CharSequence[] items = new CharSequence[]{
-                getString(R.string.home_game_state_save_slot_1),
-                getString(R.string.home_game_state_load_slot_1)
+                "Save state (slot 1)",
+                "Load state (slot 1)"
         };
-    new MaterialAlertDialogBuilder(this)
-        .setTitle(R.string.home_game_state_title)
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Game State")
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) {
                         pauseVmForStateOperation();
                         boolean ok = NativeApp.saveStateToSlot(1);
                         try {
-                            Toast.makeText(this, ok ? R.string.home_game_state_saved : R.string.home_game_state_save_failed, Toast.LENGTH_SHORT).show();
+                            Toast.makeText(this, ok ? "State saved" : "Failed to save state", Toast.LENGTH_SHORT).show();
                         } catch (Throwable ignored) {}
                         resumeVmAfterStateOperation();
                     } else if (which == 1) {
                         pauseVmForStateOperation();
                         boolean ok = NativeApp.loadStateFromSlot(1);
                         try {
-                            Toast.makeText(this, ok ? R.string.home_game_state_loaded : R.string.home_game_state_load_failed, Toast.LENGTH_SHORT).show();
+                            Toast.makeText(this, ok ? "State loaded" : "Failed to load state", Toast.LENGTH_SHORT).show();
                         } catch (Throwable ignored) {}
                         if (!ok) {
                             resumeVmAfterStateOperation();
@@ -2973,26 +2792,26 @@ public class MainActivity extends AppCompatActivity {
         try {
             versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
         } catch (Exception ignored) {}
-    String message = "ARMSX2 (" + versionName + ")\n" +
-        "by ARMSX2 team\n\n" +
-        "Core contributors:\n" +
-        "- MoonPower — App developer\n" +
-        "- jpolo — Management\n" +
-        "- Medievalshell — Web developer\n" +
-        "- set l — Web developer\n" +
-        "- Alex — QA tester\n" +
-        "- Yua — QA tester\n\n" +
-        "Thanks to:\n" +
-        "- pontos2024 (emulator base)\n" +
-        "- PCSX2 v2.3.430 (core emulator)\n" +
-        "- SDL (SDL3)\n" +
-        "- Fffathur (icon design)\n" +
-        "- vivimagic0 (icon design)";
-    new MaterialAlertDialogBuilder(this)
-        .setTitle("About")
-        .setMessage(message)
-        .setPositiveButton(android.R.string.ok, (d, w) -> d.dismiss())
-        .show();
+        String message = "ARMSX2 (" + versionName + ")\n" +
+                "by ARMSX2 team\n\n" +
+                "Core contributors:\n" +
+                "- MoonPower — App developer\n" +
+                "- jpolo — Management\n" +
+                "- Medievalshell — Web developer\n" +
+                "- set l — Web developer\n" +
+                "- Alex — QA tester\n" +
+                "- Yua — QA tester\n\n" +
+                "Thanks to:\n" +
+                "- pontos2024 (emulator base)\n" +
+                "- PCSX2 v2.3.430 (core emulator)\n" +
+                "- SDL (SDL3)\n" +
+                "- Fffathur (icon design)\n" +
+                "- vivimagic0 (icon design)";
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("About")
+                .setMessage(message)
+                .setPositiveButton(android.R.string.ok, (d, w) -> d.dismiss())
+                .show();
     }
 
     private String resolveOnScreenUiStylePreference() {
@@ -3646,33 +3465,33 @@ public class MainActivity extends AppCompatActivity {
             });
         }
 
-    View btnAbout = view.findViewById(R.id.btn_about);
-    if (btnAbout != null) {
-        btnAbout.setOnClickListener(v -> {
-        String versionName = "";
-        try { versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignored) {}
-        String message = "ARMSX2 (" + versionName + ")\n" +
-            "by ARMSX2 team\n\n" +
-            "Core contributors:\n" +
-            "- MoonPower — App developer\n" +
-            "- jpolo — Management\n" +
-            "- Medievalshell — Web developer\n" +
-            "- set l — Web developer\n" +
-            "- Alex — QA tester\n" +
-            "- Yua — QA tester\n\n" +
-            "Thanks to:\n" +
-            "- pontos2024 (emulator base)\n" +
-            "- PCSX2 v2.3.430 (core emulator)\n" +
-            "- SDL (SDL3)\n" +
-            "- Fffathur (icon design)\n" +
-            "- vivimagic0 (icon design)";
-        new MaterialAlertDialogBuilder(this)
-            .setTitle("About")
-            .setMessage(message)
-            .setPositiveButton("OK", (d, w) -> d.dismiss())
-            .show();
-        });
-    }
+        View btnAbout = view.findViewById(R.id.btn_about);
+        if (btnAbout != null) {
+            btnAbout.setOnClickListener(v -> {
+                String versionName = "";
+                try { versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignored) {}
+                String message = "ARMSX2 (" + versionName + ")\n" +
+                        "by ARMSX2 team\n\n" +
+                        "Core contributors:\n" +
+                        "- MoonPower — App developer\n" +
+                        "- jpolo — Management\n" +
+                        "- Medievalshell — Web developer\n" +
+                        "- set l — Web developer\n" +
+                        "- Alex — QA tester\n" +
+                        "- Yua — QA tester\n\n" +
+                        "Thanks to:\n" +
+                        "- pontos2024 (emulator base)\n" +
+                        "- PCSX2 v2.3.430 (core emulator)\n" +
+                        "- SDL (SDL3)\n" +
+                        "- Fffathur (icon design)\n" +
+                        "- vivimagic0 (icon design)";
+                new MaterialAlertDialogBuilder(this)
+                        .setTitle("About")
+                        .setMessage(message)
+                        .setPositiveButton("OK", (d, w) -> d.dismiss())
+                        .show();
+            });
+        }
 
         dialog.show();
     }
@@ -3809,15 +3628,15 @@ public class MainActivity extends AppCompatActivity {
         refreshOnScreenUiScaleIfNeeded();
     }
 
-	@Override
-	protected void onDestroy() {
-		stopEmuThread();
-		LogcatRecorder.shutdown();
-		super.onDestroy();
-		////
-		if (mHIDDeviceManager != null) {
-			HIDDeviceManager.release(mHIDDeviceManager);
-			mHIDDeviceManager = null;
+    @Override
+    protected void onDestroy() {
+        stopEmuThread();
+        LogcatRecorder.shutdown();
+        super.onDestroy();
+        ////
+        if (mHIDDeviceManager != null) {
+            HIDDeviceManager.release(mHIDDeviceManager);
+            mHIDDeviceManager = null;
         }
         ////
         mEmulationThread = null;
@@ -3832,10 +3651,10 @@ public class MainActivity extends AppCompatActivity {
             NativeApp.setDataRootOverride(dataDir.getAbsolutePath());
         }
         NativeApp.initializeOnce(getApplicationContext());
-        
+
         // Restore custom GPU driver if one was previously selected
         restoreGpuDriver();
-        
+
         LogcatRecorder.initialize(getApplicationContext());
         boolean recordLogs = false;
         try {
@@ -3844,15 +3663,15 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
         LogcatRecorder.setEnabled(recordLogs);
 
-		// Set up JNI
-		SDLControllerManager.nativeSetupJNI();
+        // Set up JNI
+        SDLControllerManager.nativeSetupJNI();
 
-		// Initialize state
+        // Initialize state
         SDLControllerManager.initialize();
 
         mHIDDeviceManager = HIDDeviceManager.acquire(this);
     }
-    
+
     private void restoreGpuDriver() {
         try {
             // Set native library directory for libadrenotools
@@ -3936,7 +3755,7 @@ public class MainActivity extends AppCompatActivity {
         String resolvedPath = DataDirectoryManager.resolveTreeUriToPath(this, tree);
         if (resolvedPath == null || resolvedPath.trim().isEmpty()) {
             try {
-                Toast.makeText(this, R.string.onboarding_storage_unusable, Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Unable to use selected folder", Toast.LENGTH_LONG).show();
             } catch (Throwable ignored) {}
             storagePromptShown = false;
             maybeShowDataDirectoryPrompt();
@@ -3945,7 +3764,7 @@ public class MainActivity extends AppCompatActivity {
         File targetDir = new File(resolvedPath);
         if (!targetDir.exists() && !targetDir.mkdirs()) {
             try {
-                Toast.makeText(this, R.string.onboarding_storage_create_failed, Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Cannot create folders in the selected location", Toast.LENGTH_LONG).show();
             } catch (Throwable ignored) {}
             storagePromptShown = false;
             maybeShowDataDirectoryPrompt();
@@ -3964,7 +3783,7 @@ public class MainActivity extends AppCompatActivity {
             DataDirectoryManager.markPromptDone(this);
             storagePromptShown = true;
             try {
-                Toast.makeText(this, R.string.onboarding_storage_already_using, Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Already using that folder", Toast.LENGTH_SHORT).show();
             } catch (Throwable ignored) {}
             return;
         }
@@ -3977,24 +3796,24 @@ public class MainActivity extends AppCompatActivity {
         NativeApp.shutdown();
         new Thread(() -> {
             boolean success = DataDirectoryManager.migrateData(currentDir, targetDir);
-			if (success) {
-				DataDirectoryManager.storeCustomDataRoot(getApplicationContext(), targetDir.getAbsolutePath(), uriString);
-				NativeApp.setDataRootOverride(targetDir.getAbsolutePath());
-				NativeApp.reinitializeDataRoot(targetDir.getAbsolutePath());
-				LogcatRecorder.handleDataRootChanged();
-				DataDirectoryManager.copyAssetAll(getApplicationContext(), "resources");
-			}
-			runOnUiThread(() -> {
+            if (success) {
+                DataDirectoryManager.storeCustomDataRoot(getApplicationContext(), targetDir.getAbsolutePath(), uriString);
+                NativeApp.setDataRootOverride(targetDir.getAbsolutePath());
+                NativeApp.reinitializeDataRoot(targetDir.getAbsolutePath());
+                LogcatRecorder.handleDataRootChanged();
+                DataDirectoryManager.copyAssetAll(getApplicationContext(), "resources");
+            }
+            runOnUiThread(() -> {
                 dismissDataDirProgressDialog();
                 if (success) {
                     DataDirectoryManager.markPromptDone(this);
                     storagePromptShown = true;
                     try {
-                        Toast.makeText(this, R.string.onboarding_storage_moved, Toast.LENGTH_LONG).show();
+                        Toast.makeText(this, "Data location updated", Toast.LENGTH_LONG).show();
                     } catch (Throwable ignored) {}
                 } else {
                     try {
-                        Toast.makeText(this, R.string.onboarding_storage_move_failed, Toast.LENGTH_LONG).show();
+                        Toast.makeText(this, "Failed to move data", Toast.LENGTH_LONG).show();
                     } catch (Throwable ignored) {}
                     storagePromptShown = false;
                     maybeShowDataDirectoryPrompt();
@@ -4071,7 +3890,7 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     String p = m_szGamefile;
                     if (p != null && !p.isEmpty()) {
-                        Toast.makeText(this, getString(R.string.home_launching_game, p), Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, "Launching: " + p, Toast.LENGTH_SHORT).show();
                     }
                 } catch (Throwable ignored) {}
             });
@@ -4153,7 +3972,7 @@ public class MainActivity extends AppCompatActivity {
         java.io.FileOutputStream out = null;
         try {
             java.io.File dir = new java.io.File(getCacheDir(), "games");
-            if (!dir.exists()) 
+            if (!dir.exists())
                 dir.mkdirs();
             String ext = "";
             int dot = fileName.lastIndexOf('.');
@@ -4220,8 +4039,26 @@ public class MainActivity extends AppCompatActivity {
                 maybeAutoHideControls();
                 return true;
             }
+        } else {
+            if (p_keyCode == KeyEvent.KEYCODE_BACK) {
+                if (!isHomeVisible()) {
+                    shutdownVmToHome();
+                } else {
+                    finish();
+                }
+                return true;
+            }
         }
         return super.onKeyDown(p_keyCode, p_event);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (!isHomeVisible()) {
+            shutdownVmToHome();
+            return;
+        }
+        super.onBackPressed();
     }
 
     @Override
@@ -4245,7 +4082,7 @@ public class MainActivity extends AppCompatActivity {
             p_view.setPressed(true);
             int pad_force = 0;
             if (p_keycode >= 110) {
-                float _abs = 90; 
+                float _abs = 90;
                 _abs = Math.min(_abs, 100);
                 pad_force = (int) (_abs * 32766.0f / 100);
             }
@@ -4294,11 +4131,11 @@ public class MainActivity extends AppCompatActivity {
         if (leftShoulders != null) leftShoulders.setVisibility(vis);
         View rightShoulders = findViewById(R.id.ll_pad_shoulders_right);
         if (rightShoulders != null) rightShoulders.setVisibility(vis);
-        
+
         JoystickView joystickLeft = findViewById(R.id.joystick_left);
         JoystickView joystickRight = findViewById(R.id.joystick_right);
         DPadView dpadView = findViewById(R.id.dpad_view);
-        
+
         if (joystickLeft != null) {
             if (currentControllerMode == 2) {
                 joystickLeft.setVisibility(View.GONE);
@@ -4306,7 +4143,7 @@ public class MainActivity extends AppCompatActivity {
                 joystickLeft.setVisibility(vis);
             }
         }
-        
+
         if (joystickRight != null) {
             if (currentControllerMode == 1 || currentControllerMode == 2) {
                 joystickRight.setVisibility(View.GONE);
@@ -4314,7 +4151,7 @@ public class MainActivity extends AppCompatActivity {
                 joystickRight.setVisibility(vis);
             }
         }
-        
+
         if (dpadView != null) {
             if (currentControllerMode == 1) {
                 dpadView.setVisibility(View.GONE);
@@ -4322,7 +4159,7 @@ public class MainActivity extends AppCompatActivity {
                 dpadView.setVisibility(vis);
             }
         }
-        
+
         if (!visible) {
             hideDrawerToggle();
         }
@@ -4406,9 +4243,9 @@ public class MainActivity extends AppCompatActivity {
         String message = "Android denied direct file access for:\n" + targetDir.getAbsolutePath() +
                 "\n\nGrant 'Allow access to all files' in system settings or choose a folder inside ARMSX2's storage.";
         MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(this)
-            .setTitle("Permission required")
-            .setMessage(message)
-            .setNegativeButton("OK", (d, w) -> d.dismiss());
+                .setTitle("Permission required")
+                .setMessage(message)
+                .setNegativeButton("OK", (d, w) -> d.dismiss());
         if (canGrant) {
             builder.setPositiveButton("Open settings", (d, w) -> {
                 d.dismiss();
@@ -4454,15 +4291,15 @@ public class MainActivity extends AppCompatActivity {
             // ENSURE we find this shit
             i.setType("*/*");
             String[] mimeTypes = {
-                "application/octet-stream",
-                "application/x-iso9660-image", 
-                "application/x-cd-image",
-                "application/x-raw-disk-image"
+                    "application/octet-stream",
+                    "application/x-iso9660-image",
+                    "application/x-cd-image",
+                    "application/x-raw-disk-image"
             };
             i.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes);
             startActivityResultPickIso.launch(i);
         } catch (Throwable t) {
-            try { Toast.makeText(this, R.string.home_unable_open_file_picker, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
+            try { Toast.makeText(this, "Unable to open file picker", Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
         }
     }
 
@@ -4485,23 +4322,12 @@ public class MainActivity extends AppCompatActivity {
             String outputPath = null;
             String resultMessage = null;
             boolean success = false;
-            String sourceTitle = stripFileExtension(isoDisplayName);
-            if (TextUtils.isEmpty(sourceTitle) && isoUri != null) {
-                sourceTitle = stripFileExtension(isoUri.getLastPathSegment());
-            }
-            String sourceSerial = GameScanner.parseSerialFromString(sourceTitle);
 
             try {
-                if (TextUtils.isEmpty(sourceSerial)) {
-                    try {
-                        sourceSerial = GameScanner.tryExtractIsoSerial(getContentResolver(), isoUri);
-                    } catch (Throwable ignored) {}
-                }
-
                 // Get real file path from URI
                 android.util.Log.i("ARMSX2_CHD", "Starting ISO to CHD conversion for: " + isoDisplayName);
                 android.util.Log.i("ARMSX2_CHD", "Input URI: " + isoUri.toString());
-                
+
                 inputPath = getFilePathFromUri(isoUri);
                 if (inputPath == null) {
                     resultMessage = "Could not access the selected ISO file. Please ensure the file is accessible.";
@@ -4510,11 +4336,11 @@ public class MainActivity extends AppCompatActivity {
                 }
                 android.util.Log.i("ARMSX2_CHD", "Input path resolved to: " + inputPath);
 
-                // Generate output CHD path to match what Rust will create 
+                // Generate output CHD path to match what Rust will create
                 outputPath = inputPath.replaceAll("\\.iso$", ".chd");
                 android.util.Log.i("ARMSX2_CHD", "Expected output path: " + outputPath);
 
-                // Call native conversion 
+                // Call native conversion
                 android.util.Log.i("ARMSX2_CHD", "Calling native conversion...");
                 try {
                     android.util.Log.d("ARMSX2_CHD", "Input path bytes: " + java.util.Arrays.toString(inputPath.getBytes("UTF-8")));
@@ -4525,17 +4351,14 @@ public class MainActivity extends AppCompatActivity {
                 }
                 int result = NativeApp.convertIsoToChd(inputPath);
                 android.util.Log.i("ARMSX2_CHD", "Native conversion returned code: " + result);
-                
+
                 success = handleConversionResult(result, inputPath, outputPath);
-                
+
                 if (success) {
                     final String chdCachePath = outputPath;
                     final String chdDisplayName = isoDisplayName;
-                    final String finalSourceSerial = sourceSerial;
-                    final String finalSourceTitle = sourceTitle;
                     android.util.Log.i("ARMSX2_CHD", "Conversion succeeded. Prompting user to choose CHD save location.");
-                    runOnUiThread(() -> promptForChdSave(
-                            chdCachePath, chdDisplayName, isoUri, finalSourceSerial, finalSourceTitle));
+                    runOnUiThread(() -> promptForChdSave(chdCachePath, chdDisplayName));
                     resultMessage = null;
                 } else {
                     resultMessage = getErrorMessage(result) + "\n\nInput: " + inputPath + "\nOutput: " + outputPath;
@@ -4545,8 +4368,8 @@ public class MainActivity extends AppCompatActivity {
                 }
 
             } catch (Throwable e) {
-                resultMessage = "Conversion failed with exception: " + e.getMessage() + 
-                              "\n\nInput: " + inputPath + "\nOutput: " + outputPath;
+                resultMessage = "Conversion failed with exception: " + e.getMessage() +
+                        "\n\nInput: " + inputPath + "\nOutput: " + outputPath;
                 android.util.Log.e("ARMSX2_CHD", "Conversion exception: " + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
                 android.util.Log.e("ARMSX2_CHD", "Input: " + inputPath);
                 android.util.Log.e("ARMSX2_CHD", "Output: " + outputPath);
@@ -4561,7 +4384,7 @@ public class MainActivity extends AppCompatActivity {
                         }
                     }
                 }
-                
+
                 final String finalMessage = resultMessage;
                 final boolean finalSuccess = success;
                 runOnUiThread(() -> {
@@ -4584,14 +4407,14 @@ public class MainActivity extends AppCompatActivity {
                         int displayNameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
                         if (displayNameIndex >= 0) {
                             String displayName = cursor.getString(displayNameIndex);
-                            
+
                             File cacheDir = getCacheDir();
                             File tempFile = new File(cacheDir, displayName);
                             android.util.Log.d("ARMSX2_CHD", "Creating temporary file: " + tempFile.getAbsolutePath());
-                            
+
                             try (java.io.InputStream input = getContentResolver().openInputStream(uri);
                                  java.io.FileOutputStream output = new java.io.FileOutputStream(tempFile)) {
-                                
+
                                 if (input != null) {
                                     byte[] buffer = new byte[8192];
                                     int bytesRead;
@@ -4617,11 +4440,7 @@ public class MainActivity extends AppCompatActivity {
         return null;
     }
 
-    private void promptForChdSave(String chdCachePath,
-                                  String displayName,
-                                  @Nullable Uri sourceUri,
-                                  @Nullable String sourceSerial,
-                                  @Nullable String sourceTitle) {
+    private void promptForChdSave(String chdCachePath, String displayName) {
         File chdFile = new File(chdCachePath);
         if (!chdFile.exists()) {
             android.util.Log.e("ARMSX2_CHD", "CHD file missing in cache, cannot prompt for save: " + chdCachePath);
@@ -4631,9 +4450,6 @@ public class MainActivity extends AppCompatActivity {
 
         pendingChdCachePath = chdCachePath;
         pendingChdDisplayName = displayName;
-        pendingChdSourceUri = sourceUri;
-        pendingChdSourceSerial = sourceSerial;
-        pendingChdSourceTitle = sourceTitle;
 
         String baseName = displayName;
         if (baseName == null || baseName.trim().isEmpty()) {
@@ -4717,7 +4533,7 @@ public class MainActivity extends AppCompatActivity {
     private void loadHideTimeoutFromPrefs() {
         try {
             android.content.SharedPreferences sp = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-            int sec = sp.getInt(PREF_HIDE_CONTROLS_SECONDS, 10); 
+            int sec = sp.getInt(PREF_HIDE_CONTROLS_SECONDS, 10);
             if (sec < 0) sec = 0;
             if (sec > 60) sec = 60;
             hideDelayMs = (sec == 0) ? 0L : sec * 1000L;
@@ -4951,7 +4767,7 @@ public class MainActivity extends AppCompatActivity {
                         gamesFolderUri = tree;
                         try {
                             getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                                .edit().putString(PREF_GAMES_URI, tree.toString()).apply();
+                                    .edit().putString(PREF_GAMES_URI, tree.toString()).apply();
                         } catch (Throwable ignored) {}
                         scanGamesFolder(tree);
                     }
@@ -5007,7 +4823,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void scanGamesFolder(Uri folder) {
-    List<GameEntry> entries = GameScanner.scanFolder(this, folder);
+        List<GameEntry> entries = GameScanner.scanFolder(this, folder);
         try {
             java.util.Collections.sort(entries, (a, b) -> {
                 String ta = a != null ? (a.title != null ? a.title : "") : "";
@@ -5018,7 +4834,7 @@ public class MainActivity extends AppCompatActivity {
                 return ta.compareToIgnoreCase(tb);
             });
         } catch (Throwable ignored) {}
-    gamesAdapter.update(entries);
+        gamesAdapter.update(entries);
         final List<GameEntry> toResolve = new ArrayList<>();
         for (GameEntry ge : entries) {
             try {
@@ -5054,19 +4870,19 @@ public class MainActivity extends AppCompatActivity {
         }
         if (rvGames != null && gamesAdapter.getItemCount() > 0) {
             rvGames.post(() -> {
-                rvGames.requestFocus(); 
+                rvGames.requestFocus();
                 rvGames.postDelayed(() -> {
                     RecyclerView.ViewHolder vh = rvGames.findViewHolderForAdapterPosition(0);
                     if (vh != null && vh.itemView != null) {
                         vh.itemView.requestFocus();
                     }
-                }, 100); 
+                }, 100);
             });
         }
         boolean empty = entries.isEmpty();
-    try { Toast.makeText(this, getString(R.string.home_games_found_count, entries.size()), Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
+        try { Toast.makeText(this, "Found " + entries.size() + " game(s)", Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
         if (tvEmpty != null) {
-            tvEmpty.setText(empty ? getString(R.string.home_no_games_detected) : "");
+            tvEmpty.setText(empty ? "No games detected in this folder" : "");
             tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
         }
         if (emptyContainer != null) emptyContainer.setVisibility(empty ? View.VISIBLE : View.GONE);
@@ -5080,8 +4896,8 @@ public class MainActivity extends AppCompatActivity {
         String t = title.trim();
         if (t.isEmpty()) return 2;
         char c = t.charAt(0);
-        if (c >= '0' && c <= '9') return 0; 
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return 1; 
+        if (c >= '0' && c <= '9') return 0;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return 1;
         return 2;
     }
 
@@ -5092,7 +4908,6 @@ public class MainActivity extends AppCompatActivity {
 
         if (homeContainer != null) {
             homeContainer.setVisibility(show ? View.VISIBLE : View.GONE);
-            onBackPressCallback.setEnabled(!show);
         }
         if (drawerLayout != null) {
             drawerLayout.setVisibility(show ? View.VISIBLE : View.GONE);
@@ -5148,7 +4963,7 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Throwable ignored) {}
         if (show && tvEmpty != null && gamesFolderUri == null) {
-            tvEmpty.setText(R.string.home_nav_choose_games_folder);
+            tvEmpty.setText("Choose a games folder");
             tvEmpty.setVisibility(View.VISIBLE);
             if (emptyContainer != null) emptyContainer.setVisibility(View.VISIBLE);
             if (rvGames != null) rvGames.setVisibility(View.GONE);
@@ -5269,7 +5084,7 @@ public class MainActivity extends AppCompatActivity {
     private void clearBackgroundImages() {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(PREF_BG_L).remove(PREF_BG_P).apply();
         if (bgImage != null) { bgImage.setImageDrawable(null); bgImage.setVisibility(View.GONE); }
-        try { Toast.makeText(this, R.string.home_background_cleared, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
+        try { Toast.makeText(this, "Background cleared.", Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
     }
     // endregion Background image picker
 
@@ -5277,26 +5092,38 @@ public class MainActivity extends AppCompatActivity {
         launchGameWithPreflight(entry.uri);
     }
 
-    // Cheap but effective: if emulator isn't running yet, boot BIOS first, then load the game like the File button flow.
+    // Boot selected game immediately. No BIOS preflight.
     private void launchGameWithPreflight(@NonNull Uri uri) {
         applyPerGameSettingsForUri(uri);
+
+        showHome(false);
+        pendingGameUri = null;
+
+        // Convert URI → raw file path for native core
+        String rawPath;
+        if ("file".equalsIgnoreCase(uri.getScheme())) {
+            rawPath = new File(uri.getPath()).getAbsolutePath();
+        } else {
+            // Fallback for content:// URIs (shouldn't happen in cartridge mode)
+            rawPath = uri.getPath();
+        }
+
+        // CRITICAL: native expects a filesystem path, not a URI
+        m_szGamefile = rawPath;
+
+        // If already running, hot swap
         if (isThread()) {
-            handleSelectedGameUri(uri);
+            handleSelectedGameUri(Uri.fromFile(new File(rawPath)));
             return;
         }
-        // Start BIOS first
-        try { Toast.makeText(this, R.string.home_preflight_boot_bios, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
-        pendingGameUri = uri;
-        pendingLaunchRetries = 0;
-        bootBios();
-        getWindow().getDecorView().postDelayed(pendingLaunchRunnable, 900);
-        schedulePreflightFallback();
+
+        startEmuThread();
     }
 
     private final Runnable pendingLaunchRunnable = new Runnable() {
         @Override public void run() {
             if (pendingGameUri == null) return;
-            try { Toast.makeText(MainActivity.this, R.string.home_preflight_launch_selected_game, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
+            try { Toast.makeText(MainActivity.this, "Preflight: launching selected game…", Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
             Uri toLaunch = pendingGameUri;
             pendingGameUri = null;
             handleSelectedGameUri(toLaunch);
@@ -5332,10 +5159,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     static class GameEntry {
-        final String title;      
+        final String title;
         final Uri uri;
-        String serial;           
-        String gameTitle;        
+        String serial;
+        String gameTitle;
         GameEntry(String t, Uri u) { title = t; uri = u; }
         String fileTitleNoExt() {
             int i = title.lastIndexOf('.');
@@ -5344,29 +5171,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     static class GameScanner {
-    static final String[] EXTS = new String[]{".iso", ".img", ".bin", ".cso", ".zso", ".chd", ".gz"};
-    static List<GameEntry> scanFolder(Context ctx, Uri treeUri) {
+        static final String[] EXTS = new String[]{".iso", ".img", ".bin", ".cso", ".zso", ".chd", ".gz"};
+        static List<GameEntry> scanFolder(Context ctx, Uri treeUri) {
             List<GameEntry> out = new ArrayList<>();
             android.content.ContentResolver cr = ctx.getContentResolver();
             try {
                 String rootId = android.provider.DocumentsContract.getTreeDocumentId(treeUri);
                 scanChildren(cr, treeUri, rootId, out, 0, 3);
             } catch (Exception ignored) {}
-            for (GameEntry e : out) {
-                if (e == null || !isChdEntry(e.uri, e.title)) {
-                    continue;
-                }
-                Pair<String, String> metadata = getPersistedChdMetadata(ctx, e.uri);
-                if (metadata == null) {
-                    continue;
-                }
-                if (TextUtils.isEmpty(e.serial) && !TextUtils.isEmpty(metadata.first)) {
-                    e.serial = metadata.first;
-                }
-                if (TextUtils.isEmpty(e.gameTitle) && !TextUtils.isEmpty(metadata.second)) {
-                    e.gameTitle = metadata.second;
-                }
-            }
             return out;
         }
 
@@ -5437,7 +5249,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         private static void debugChildren(android.content.ContentResolver cr, Uri treeUri, String parentDocId,
-                                           List<String> out, int depth, int maxDepth, String pathPrefix) {
+                                          List<String> out, int depth, int maxDepth, String pathPrefix) {
             if (depth > maxDepth) return;
             Uri children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId);
             try (android.database.Cursor c = cr.query(children, new String[]{
@@ -5476,11 +5288,11 @@ public class MainActivity extends AppCompatActivity {
             return (i > 0) ? name.substring(0, i) : name;
         }
 
-    static String parseSerialFromString(String s) {
+        static String parseSerialFromString(String s) {
             if (s == null) return null;
-        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
-            "(S[CL](?:ES|US|PS|CS)?[-_]?[0-9]{3,5}(?:\\.[0-9]{2})?)",
-            java.util.regex.Pattern.CASE_INSENSITIVE);
+            java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                    "(S[CL](?:ES|US|PS|CS)?[-_]?[0-9]{3,5}(?:\\.[0-9]{2})?)",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
             java.util.regex.Matcher m = p.matcher(s);
             if (m.find()) {
                 String v = m.group(1).toUpperCase();
@@ -5528,9 +5340,9 @@ public class MainActivity extends AppCompatActivity {
                             byte[] cnf = readRange(cr, uri, (long) lba * SECTOR, readSize);
                             if (cnf != null) {
                                 String txt = new String(cnf, java.nio.charset.StandardCharsets.US_ASCII);
-                java.util.regex.Matcher m = java.util.regex.Pattern.compile(
-                    "BOOT\\d*\\s*=\\s*[^\\\\\\r\\n]*\\\\([A-Z0-9_\\.]+)",
-                    java.util.regex.Pattern.CASE_INSENSITIVE).matcher(txt);
+                                java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                                        "BOOT\\d*\\s*=\\s*[^\\\\\\r\\n]*\\\\([A-Z0-9_\\.]+)",
+                                        java.util.regex.Pattern.CASE_INSENSITIVE).matcher(txt);
                                 if (m.find()) {
                                     String bootElf = m.group(1);
                                     String serial = parseSerialFromString(bootElf);
@@ -5547,7 +5359,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         static String tryExtractBinSerialQuick(android.content.ContentResolver cr, Uri uri) throws java.io.IOException {
-            final int MAX = 8 * 1024 * 1024; 
+            final int MAX = 8 * 1024 * 1024;
             byte[] buf;
             try (java.io.InputStream in = CsoUtils.openInputStream(cr, uri)) {
                 if (in == null) return null;
@@ -5566,8 +5378,8 @@ public class MainActivity extends AppCompatActivity {
             if (buf == null || buf.length == 0) return null;
             String txt = new String(buf, java.nio.charset.StandardCharsets.US_ASCII);
             java.util.regex.Matcher m = java.util.regex.Pattern.compile(
-                "BOOT\\d*\\s*=\\s*[^\\\\\\r\\n]*\\\\([A-Z0-9_\\.]+)",
-                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(txt);
+                    "BOOT\\d*\\s*=\\s*[^\\\\\\r\\n]*\\\\([A-Z0-9_\\.]+)",
+                    java.util.regex.Pattern.CASE_INSENSITIVE).matcher(txt);
             if (m.find()) {
                 String bootElf = m.group(1);
                 String serial = parseSerialFromString(bootElf);
@@ -5940,7 +5752,7 @@ public class MainActivity extends AppCompatActivity {
     static class RedumpDB {
         static class Result { String serial; String name; }
         private static final Object LOCK = new Object();
-        private static java.util.Map<String, Result> sMd5SizeToResult = null; 
+        private static java.util.Map<String, Result> sMd5SizeToResult = null;
 
         private static String md5ToLower(String s) { return s != null ? s.trim().toLowerCase() : null; }
 
@@ -6118,7 +5930,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         private final List<GameEntry> data;
-    private final List<GameEntry> filtered = new ArrayList<>();
+        private final List<GameEntry> filtered = new ArrayList<>();
         private final OnClick onClick;
         private boolean listMode = false;
         // Lightweight in-memory cache for cover bitmaps
@@ -6129,7 +5941,7 @@ public class MainActivity extends AppCompatActivity {
         private static final java.util.Set<String> sLocalCoverMissing = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
         static {
             int maxMem = (int) (Runtime.getRuntime().maxMemory() / 1024);
-            int cacheSize = Math.max(1024 * 8, Math.min(1024 * 64, maxMem / 16)); 
+            int cacheSize = Math.max(1024 * 8, Math.min(1024 * 64, maxMem / 16));
             sCoverCache = new android.util.LruCache<String, android.graphics.Bitmap>(cacheSize) {
                 @Override protected int sizeOf(String key, android.graphics.Bitmap value) {
                     return value.getByteCount() / 1024;
@@ -6152,7 +5964,7 @@ public class MainActivity extends AppCompatActivity {
             sLocalCoverFiles.put(key, file);
             sLocalCoverMissing.remove(key);
         }
-    GamesAdapter(List<GameEntry> d, OnClick oc) { data = d; filtered.addAll(d); onClick = oc; setHasStableIds(true); }
+        GamesAdapter(List<GameEntry> d, OnClick oc) { data = d; filtered.addAll(d); onClick = oc; setHasStableIds(true); }
         void update(List<GameEntry> d) { clearLocalCoverCache(); data.clear(); data.addAll(d); applyFilter(currentFilter); }
         int getItemCountTotal() { return data.size(); }
         private String currentFilter = "";
@@ -6327,11 +6139,11 @@ public class MainActivity extends AppCompatActivity {
                 return false;
             });
             holder.itemView.setOnLongClickListener(v -> {
-                try { ((MainActivity)holder.itemView.getContext()).showGameOptionsPopup(v, e); } catch (Throwable ignored) {}
+                try { ((MainActivity)holder.itemView.getContext()).showGameOptionsDialog(e); } catch (Throwable ignored) {}
                 return true;
             });
         }
-    @Override public int getItemCount() { return filtered.size(); }
+        @Override public int getItemCount() { return filtered.size(); }
         private static android.view.LayoutInflater getLayoutInflater(ViewGroup parent) {
             return android.view.LayoutInflater.from(parent.getContext());
         }
@@ -6379,7 +6191,7 @@ public class MainActivity extends AppCompatActivity {
                                     }
                                 } else if (code == 404) {
                                     sNegativeCache.add(ustr);
-                                    continue; 
+                                    continue;
                                 } else {
                                     try { DebugLog.d("Covers", "HTTP " + code + " for " + ustr); } catch (Throwable ignored) {}
                                 }
