@@ -259,6 +259,27 @@ public class MainActivity extends AppCompatActivity {
 
     private int currentControllerMode = 0; // 0=2 Sticks, 1=1 Stick+Face, 2=D-Pad Only
 
+    // RadialGamePad overlay — replaces on-screen touch controls
+    private kr.co.iefriends.pcsx2.input.RadialGamePadControllerView mRadialGamePad;
+
+    private void setupRadialGamePad() {
+        if (disableTouchControls) return;
+
+        if (mRadialGamePad != null) {
+            FrameLayout content = findViewById(android.R.id.content);
+            if (content != null) content.removeView(mRadialGamePad);
+            mRadialGamePad = null;
+        }
+
+        mRadialGamePad = new kr.co.iefriends.pcsx2.input.RadialGamePadControllerView(this);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        );
+        FrameLayout content = findViewById(android.R.id.content);
+        if (content != null) content.addView(mRadialGamePad, params);
+    }
+
     private final RetroAchievementsBridge.Listener retroAchievementsListener = new RetroAchievementsBridge.Listener() {
         @Override
         public void onStateUpdated(RetroAchievementsBridge.State state) {
@@ -4977,6 +4998,16 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         applyFullscreen();
+
+        if (!show) {
+            setupRadialGamePad();
+        } else {
+            if (mRadialGamePad != null) {
+                FrameLayout content = findViewById(android.R.id.content);
+                if (content != null) content.removeView(mRadialGamePad);
+                mRadialGamePad = null;
+            }
+        }
     }
 
     private boolean isHomeVisible() {

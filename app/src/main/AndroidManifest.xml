@@ -63,7 +63,8 @@
             android:name=".activities.SingleGameActivity"
             android:exported="true"
             android:theme="@style/Theme.PCSX2"
-            android:screenOrientation="unspecified"
+            android:screenOrientation="sensorLandscape"
+            android:windowLayoutInDisplayCutoutMode="shortEdges"
             android:launchMode="singleTask">
 
             <intent-filter>
@@ -76,7 +77,8 @@
 
         <activity
             android:name=".activities.MainActivity"
-            android:screenOrientation="unspecified"
+            android:screenOrientation="sensorLandscape"
+            android:windowLayoutInDisplayCutoutMode="shortEdges"
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize"
             android:exported="true"
             android:launchMode="singleTop">
