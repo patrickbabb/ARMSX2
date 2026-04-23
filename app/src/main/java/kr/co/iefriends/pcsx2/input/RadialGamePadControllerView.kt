@@ -20,6 +20,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kr.co.iefriends.pcsx2.NativeApp
+import kr.co.iefriends.pcsx2.activities.LocalPadConfig
+import kr.co.iefriends.pcsx2.activities.PadConfig
+import kr.co.iefriends.pcsx2.activities.PadDial
+import kr.co.iefriends.pcsx2.activities.PrimaryDialDef
+import kr.co.iefriends.pcsx2.activities.PsxIds
 
 class RadialGamePadControllerView @JvmOverloads constructor(
     context: Context,
@@ -28,33 +33,7 @@ class RadialGamePadControllerView @JvmOverloads constructor(
 ) : FrameLayout(context, attrs, defStyle) {
 
     companion object {
-        // Primary dial IDs
-        private const val ID_DPAD        = 0
-        private const val ID_LEFT_STICK  = 1
-        private const val ID_RIGHT_STICK = 2
-
-        // Face buttons
-        private const val ID_CROSS       = 10
-        private const val ID_CIRCLE      = 11
-        private const val ID_SQUARE      = 12
-        private const val ID_TRIANGLE    = 13
-
-        // Shoulders
-        private const val ID_L1          = 20
-        private const val ID_L2          = 21
-        private const val ID_R1          = 22
-        private const val ID_R2          = 23
-
-        // Meta buttons
-        private const val ID_SELECT      = 30
-        private const val ID_START       = 31
-        private const val ID_L3          = 32
-        private const val ID_R3          = 33
-
-        // Analog threshold for D-pad direction events
         private const val DPAD_THRESHOLD = 0.5f
-
-        // Analog scale: RadialGamePad gives -1..1, NativeApp expects 0..255
         private const val ANALOG_SCALE   = 255f
     }
 
@@ -69,113 +48,59 @@ class RadialGamePadControllerView @JvmOverloads constructor(
         scope.cancel()
     }
 
+    // -------------------------------------------------------------------------
+    // Pad setup — driven entirely by LocalPadConfig
+    // -------------------------------------------------------------------------
+
     private fun setupPads() {
         removeAllViews()
-        setupLeftPad()
-        setupRightPad()
+        setupPad(LocalPadConfig.leftPad,  Gravity.START or Gravity.CENTER_VERTICAL)
+        setupPad(LocalPadConfig.rightPad, Gravity.END   or Gravity.CENTER_VERTICAL)
     }
 
-    // -------------------------------------------------------------------------
-    // Left pad: D-pad center, L1/L2 top, Select top-center
-    // -------------------------------------------------------------------------
-    private fun buildLeftPadConfig(): RadialGamePadConfig {
-        return RadialGamePadConfig(
-            sockets     = 12,
-            primaryDial = PrimaryDialConfig.Cross(CrossConfig(id = ID_DPAD)),
-            secondaryDials = listOf(
-                SecondaryDialConfig.SingleButton(
-                    index        = 2,
-                    scale        = 1f,
-                    distance     = 0f,
-                    buttonConfig = ButtonConfig(id = ID_SELECT, label = "SEL")
-                ),
-                SecondaryDialConfig.SingleButton(
-                    index        = 3,
-                    scale        = 1f,
-                    distance     = 0f,
-                    buttonConfig = ButtonConfig(id = ID_L1, label = "L1")
-                ),
-                SecondaryDialConfig.SingleButton(
-                    index        = 4,
-                    scale        = 1f,
-                    distance     = 0f,
-                    buttonConfig = ButtonConfig(id = ID_L2, label = "L2")
-                ),
-                SecondaryDialConfig.Stick(
-                    index    = 9,
-                    spread   = 2,
-                    scale    = 2.2f,
-                    distance = 0.1f,
-                    id       = ID_LEFT_STICK
-                )
+    private fun buildPadConfig(config: PadConfig): RadialGamePadConfig {
+        val primaryDial = when (val p = config.primaryDial) {
+            is PrimaryDialDef.Cross    -> PrimaryDialConfig.Cross(
+                CrossConfig(id = p.id, useDiagonals = p.useDiagonals)
             )
-        )
-    }
-
-    // -------------------------------------------------------------------------
-    // Right pad: face buttons center, R1/R2 top, Start top-center
-    // -------------------------------------------------------------------------
-    private fun buildRightPadConfig(): RadialGamePadConfig {
-        return RadialGamePadConfig(
-            sockets     = 12,
-            primaryDial = PrimaryDialConfig.PrimaryButtons(
-                dials = listOf(
-                    ButtonConfig(id = ID_CIRCLE,   label = "○"),
-                    ButtonConfig(id = ID_CROSS,    label = "✕"),
-                    ButtonConfig(id = ID_SQUARE,   label = "□"),
-                    ButtonConfig(id = ID_TRIANGLE, label = "△")
-                )
-            ),
-            secondaryDials = listOf(
-                SecondaryDialConfig.SingleButton(
-                    index        = 2,
-                    scale        = 1f,
-                    distance     = 0f,
-                    buttonConfig = ButtonConfig(id = ID_R1, label = "R1")
-                ),
-                SecondaryDialConfig.SingleButton(
-                    index        = 3,
-                    scale        = 1f,
-                    distance     = 0f,
-                    buttonConfig = ButtonConfig(id = ID_R2, label = "R2")
-                ),
-                SecondaryDialConfig.SingleButton(
-                    index        = 4,
-                    scale        = 1f,
-                    distance     = 0f,
-                    buttonConfig = ButtonConfig(id = ID_START, label = "START")
-                ),
-                SecondaryDialConfig.Stick(
-                    index    = 9,
-                    spread   = 2,
-                    scale    = 2.2f,
-                    distance = 0.1f,
-                    id       = ID_RIGHT_STICK
-                )
+            is PrimaryDialDef.Buttons  -> PrimaryDialConfig.PrimaryButtons(
+                dials = p.dials.map { ButtonConfig(id = it.id, label = it.label) }
             )
-        )
-    }
-
-    private fun setupLeftPad() {
-        val pad = RadialGamePad(buildLeftPadConfig(), 25f, context)
-        addView(pad, LayoutParams(
-            LayoutParams.WRAP_CONTENT,
-            LayoutParams.MATCH_PARENT
-        ).apply {
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-        })
-        scope.launch {
-            pad.events().collect { handleEvent(it) }
         }
+
+        val secondaryDials = config.secondaryDials.map { dial ->
+            when (dial) {
+                is PadDial.Empty  -> SecondaryDialConfig.Empty(
+                    dial.index, dial.spread, dial.scale, dial.distance
+                )
+                is PadDial.Button -> SecondaryDialConfig.SingleButton(
+                    dial.index, dial.scale, dial.distance,
+                    ButtonConfig(id = dial.id, label = dial.label)
+                )
+                is PadDial.Stick  -> SecondaryDialConfig.Stick(
+                    index    = dial.index,
+                    spread   = dial.spread,
+                    scale    = dial.scale,
+                    distance = dial.distance,
+                    id       = dial.id
+                )
+            }
+        }
+
+        return RadialGamePadConfig(
+            sockets        = config.socketCount,
+            primaryDial    = primaryDial,
+            secondaryDials = secondaryDials
+        )
     }
 
-    private fun setupRightPad() {
-        val pad = RadialGamePad(buildRightPadConfig(), 25f, context)
+    private fun setupPad(config: PadConfig, gravity: Int) {
+        val pad = RadialGamePad(buildPadConfig(config), LocalPadConfig.PAD_SIZE, context)
         addView(pad, LayoutParams(
             LayoutParams.WRAP_CONTENT,
             LayoutParams.MATCH_PARENT
         ).apply {
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            this.gravity = gravity
         })
         scope.launch {
             pad.events().collect { handleEvent(it) }
@@ -183,8 +108,9 @@ class RadialGamePadControllerView @JvmOverloads constructor(
     }
 
     // -------------------------------------------------------------------------
-    // Event dispatch
+    // Event dispatch — unchanged from original
     // -------------------------------------------------------------------------
+
     private fun handleEvent(event: Event) {
         when (event) {
             is Event.Button    -> handleButton(event)
@@ -201,29 +127,22 @@ class RadialGamePadControllerView @JvmOverloads constructor(
 
     private fun handleDirection(event: Event.Direction) {
         when (event.id) {
-            ID_DPAD -> {
-                // D-pad: threshold-based digital
+            PsxIds.DPAD -> {
                 NativeApp.setPadButton(KeyEvent.KEYCODE_DPAD_UP,    0, event.yAxis < -DPAD_THRESHOLD)
                 NativeApp.setPadButton(KeyEvent.KEYCODE_DPAD_DOWN,  0, event.yAxis >  DPAD_THRESHOLD)
                 NativeApp.setPadButton(KeyEvent.KEYCODE_DPAD_LEFT,  0, event.xAxis < -DPAD_THRESHOLD)
                 NativeApp.setPadButton(KeyEvent.KEYCODE_DPAD_RIGHT, 0, event.xAxis >  DPAD_THRESHOLD)
             }
-            ID_LEFT_STICK -> {
-                // Left stick: analog axes, mirroring sendAnalog() in MainActivity
-                // Positive X = right (111), Negative X = left (113)
-                // Positive Y = down (112), Negative Y = up (110)
-                NativeApp.setPadButton(111, scaled(maxOf(0f, event.xAxis)),  event.xAxis >  0f)
+            PsxIds.LEFT_STICK -> {
+                NativeApp.setPadButton(111, scaled(maxOf(0f,  event.xAxis)), event.xAxis >  0f)
                 NativeApp.setPadButton(113, scaled(maxOf(0f, -event.xAxis)), event.xAxis <  0f)
-                NativeApp.setPadButton(112, scaled(maxOf(0f, event.yAxis)),  event.yAxis >  0f)
+                NativeApp.setPadButton(112, scaled(maxOf(0f,  event.yAxis)), event.yAxis >  0f)
                 NativeApp.setPadButton(110, scaled(maxOf(0f, -event.yAxis)), event.yAxis <  0f)
             }
-            ID_RIGHT_STICK -> {
-                // Right stick: analog axes
-                // Positive X = right (121), Negative X = left (123)
-                // Positive Y = down (122), Negative Y = up (120)
-                NativeApp.setPadButton(121, scaled(maxOf(0f, event.xAxis)),  event.xAxis >  0f)
+            PsxIds.RIGHT_STICK -> {
+                NativeApp.setPadButton(121, scaled(maxOf(0f,  event.xAxis)), event.xAxis >  0f)
                 NativeApp.setPadButton(123, scaled(maxOf(0f, -event.xAxis)), event.xAxis <  0f)
-                NativeApp.setPadButton(122, scaled(maxOf(0f, event.yAxis)),  event.yAxis >  0f)
+                NativeApp.setPadButton(122, scaled(maxOf(0f,  event.yAxis)), event.yAxis >  0f)
                 NativeApp.setPadButton(120, scaled(maxOf(0f, -event.yAxis)), event.yAxis <  0f)
             }
         }
@@ -232,18 +151,18 @@ class RadialGamePadControllerView @JvmOverloads constructor(
     private fun scaled(value: Float): Int = (value * ANALOG_SCALE).toInt().coerceIn(0, 255)
 
     private fun idToKeyCode(id: Int): Int? = when (id) {
-        ID_CROSS     -> KeyEvent.KEYCODE_BUTTON_A
-        ID_CIRCLE    -> KeyEvent.KEYCODE_BUTTON_B
-        ID_SQUARE    -> KeyEvent.KEYCODE_BUTTON_X
-        ID_TRIANGLE  -> KeyEvent.KEYCODE_BUTTON_Y
-        ID_L1        -> KeyEvent.KEYCODE_BUTTON_L1
-        ID_L2        -> KeyEvent.KEYCODE_BUTTON_L2
-        ID_R1        -> KeyEvent.KEYCODE_BUTTON_R1
-        ID_R2        -> KeyEvent.KEYCODE_BUTTON_R2
-        ID_SELECT    -> KeyEvent.KEYCODE_BUTTON_SELECT
-        ID_START     -> KeyEvent.KEYCODE_BUTTON_START
-        ID_L3        -> KeyEvent.KEYCODE_BUTTON_THUMBL
-        ID_R3        -> KeyEvent.KEYCODE_BUTTON_THUMBR
-        else         -> null
+        PsxIds.CROSS     -> KeyEvent.KEYCODE_BUTTON_A
+        PsxIds.CIRCLE    -> KeyEvent.KEYCODE_BUTTON_B
+        PsxIds.SQUARE    -> KeyEvent.KEYCODE_BUTTON_X
+        PsxIds.TRIANGLE  -> KeyEvent.KEYCODE_BUTTON_Y
+        PsxIds.L1        -> KeyEvent.KEYCODE_BUTTON_L1
+        PsxIds.L2        -> KeyEvent.KEYCODE_BUTTON_L2
+        PsxIds.R1        -> KeyEvent.KEYCODE_BUTTON_R1
+        PsxIds.R2        -> KeyEvent.KEYCODE_BUTTON_R2
+        PsxIds.SELECT    -> KeyEvent.KEYCODE_BUTTON_SELECT
+        PsxIds.START     -> KeyEvent.KEYCODE_BUTTON_START
+        PsxIds.L3        -> KeyEvent.KEYCODE_BUTTON_THUMBL
+        PsxIds.R3        -> KeyEvent.KEYCODE_BUTTON_THUMBR
+        else             -> null
     }
 }

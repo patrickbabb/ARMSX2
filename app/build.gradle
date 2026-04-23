@@ -13,8 +13,17 @@ if (enableRN) {
 ext {
     hermesEnabled = true
     react = [
-        enableHermes: true
+            enableHermes: true
     ]
+}
+
+// ============================================================
+// LOCAL GAME CONFIG (gitignored)
+// ============================================================
+def localConfigFile = file("local_game_config.properties")
+def localConfig = new Properties()
+if (localConfigFile.exists()) {
+    localConfigFile.withInputStream { localConfig.load(it) }
 }
 
 def discordEnvFile = file("src/main/assets/discord_creds.env")
@@ -54,7 +63,7 @@ android {
     flavorDimensions "distribution"
 
     defaultConfig {
-    applicationId "come.nanodata.armsx2"
+        applicationId "come.nanodata.armsx2" + (localConfig.getProperty("app_id_suffix") ?: "")
         minSdk 26
         targetSdk 35
         versionCode 22
@@ -68,14 +77,12 @@ android {
             cmake {
                 def stlLib = enableRN ? "c++_shared" : "c++_static"
                 arguments "-DANDROID=true", "-DCMAKE_BUILD_TYPE=Release", "-DANDROID_STL=${stlLib}", "-DENABLE_RAINTEGRATION=ON"
-                // Toggle native Discord SDK wiring based on whether the partner SDK AAR is present.
                 arguments "-DUSE_DISCORD_SDK=${isDiscordSdkAvailable ? 'ON' : 'OFF'}"
                 if (isSwitchBuild) {
                     arguments "-DSWITCHBUILD=ON"
                     cFlags "-D__NINTENDO_SWITCH__"
                     cppFlags "-D__NINTENDO_SWITCH__"
                 }
-//                arguments '-DANDROID=true','-DCMAKE_BUILD_TYPE=Debug','-DANDROID_STL=c++_static'
             }
         }
         ndk {
@@ -89,7 +96,7 @@ android {
         buildConfigField "boolean", "ENABLE_RN", enableRN ? "true" : "false"
         buildConfigField "boolean", "DISCORD_INTEGRATION_ENABLED", isDiscordSdkAvailable ? "true" : "false"
         buildConfigField "boolean", "IS_GOOGLE_PLAY_BUILD", "false"
-    resValue "bool", "armsx2_documents_provider_enabled", "true"
+        resValue "bool", "armsx2_documents_provider_enabled", "true"
     }
 
     productFlavors {
@@ -127,6 +134,7 @@ android {
             minifyEnabled false
             applicationIdSuffix ".debug"
             buildConfigField "boolean", "LOGS_ENABLED", "true"
+            resValue "string", "app_name", localConfig.getProperty("app_name_debug") ?: "ARMSX2 Debug"
         }
         release {
             ndk {
@@ -136,11 +144,13 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
             buildConfigField "boolean", "LOGS_ENABLED", "true"
+            resValue "string", "app_name", localConfig.getProperty("app_name") ?: "ARMSX2"
         }
         releaseNoLog {
             initWith release
             matchingFallbacks = ["release"]
             buildConfigField "boolean", "LOGS_ENABLED", "false"
+            resValue "string", "app_name", localConfig.getProperty("app_name") ?: "ARMSX2"
         }
     }
     compileOptions {
@@ -174,6 +184,9 @@ android {
         main {
             assets.srcDirs += ['../app_icons']
             jniLibs.srcDirs += ['src/main/jniLibs']
+            // res-local overlays res/ — place gitignored mipmap folders here to
+            // override the default launcher icons without touching committed assets.
+            res.srcDirs += ['src/main/res-local']
             if (enableRN) {
                 java.srcDir 'src/reactnative/java'
             }
@@ -204,7 +217,6 @@ dependencies {
     implementation 'com.caverock:androidsvg:1.4'
     implementation 'androidx.browser:browser:1.9.0'
     if (enableRN) {
-        // React Native core and Hermes engine (brownfield integration)
         implementation 'com.facebook.react:react-android:0.74.3'
         implementation 'com.facebook.react:hermes-android:0.74.3'
     }
@@ -214,13 +226,8 @@ dependencies {
         logger.lifecycle("[app] Discord SDK not found; Discord integration will be disabled.")
     }
 
-    // Kotlin stdlib
     implementation 'org.jetbrains.kotlin:kotlin-stdlib'
-
-    // Coroutines
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
-
-    // RadialGamePad
     implementation 'com.github.swordfish90:radialgamepad:2.0.0'
 }
 
