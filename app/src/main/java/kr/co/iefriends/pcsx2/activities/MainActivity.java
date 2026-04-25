@@ -263,7 +263,6 @@ public class MainActivity extends AppCompatActivity {
     private kr.co.iefriends.pcsx2.input.RadialGamePadControllerView mRadialGamePad;
 
     private void setupRadialGamePad() {
-        if (disableTouchControls) return;
 
         if (mRadialGamePad != null) {
             FrameLayout content = findViewById(android.R.id.content);
@@ -352,7 +351,7 @@ public class MainActivity extends AppCompatActivity {
         DiscordBridge.updateEngineActivity(this);
         sInstanceRef = new WeakReference<>(this);
         setContentView(R.layout.activity_main);
-        disableTouchControls = DeviceProfiles.isTvOrDesktop(this);
+        disableTouchControls = true;
         // Keep screen awake during gameplay
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
@@ -2548,6 +2547,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void applyControllerMode(int mode) {
+        if (disableTouchControls) return;
         currentControllerMode = mode;
 
         JoystickView joystickLeft = findViewById(R.id.joystick_left);
@@ -4075,11 +4075,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        if (!isHomeVisible()) {
-            shutdownVmToHome();
-            return;
-        }
-        super.onBackPressed();
+
     }
 
     @Override
@@ -4962,7 +4958,7 @@ public class MainActivity extends AppCompatActivity {
         if (show || disableTouchControls) {
             hideDrawerToggle();
         }
-        int vis = show ? View.GONE : View.VISIBLE;
+        int vis = (show || disableTouchControls) ? View.GONE : View.VISIBLE;
         setOnScreenControlsVisible(!show);
         if (llPadSelectStart != null) llPadSelectStart.setVisibility(vis);
         if (llPadRight != null) llPadRight.setVisibility(vis);
