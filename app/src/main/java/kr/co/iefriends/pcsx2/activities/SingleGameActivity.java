@@ -53,6 +53,12 @@ public class SingleGameActivity extends Activity {
             writePcsx2Ini(root);
             markBiosSelected(root);
 
+            // Extract textures if the config flag is set and they haven't been
+            // extracted yet. Must run before launching so the core finds them.
+            if (LocalGameConfig.HAS_TEXTURES) {
+                ensureTexturesExtracted(root);
+            }
+
             Uri gameUri = Uri.fromFile(gameFile);
 
             runOnUiThread(() -> {
@@ -179,6 +185,70 @@ public class SingleGameActivity extends Activity {
 
         } catch (Exception e) {
             throw new RuntimeException("Failed to extract BIOS", e);
+        }
+    }
+
+    // ==============================
+    // TEXTURE EXTRACTION
+    // Extracts assets/textures.zip into:
+    //   <dataRoot>/textures/<GAME_SERIAL>/replacements/
+    // Skipped if the target directory already exists and is non-empty.
+    // Controlled by LocalGameConfig.HAS_TEXTURES and LocalGameConfig.GAME_SERIAL.
+    // ==============================
+    private void ensureTexturesExtracted(File root) {
+        File targetDir = new File(root,
+                "textures/" + LocalGameConfig.GAME_SERIAL + "/replacements");
+
+        // Already extracted — skip
+        String[] contents = targetDir.list();
+        if (contents != null && contents.length > 0) return;
+
+        targetDir.mkdirs();
+
+        try {
+            String apkPath = getApplicationInfo().sourceDir;
+            java.util.zip.ZipFile apk = new java.util.zip.ZipFile(apkPath);
+
+            ZipEntry texturesZipEntry = apk.getEntry("assets/textures.zip");
+            if (texturesZipEntry == null) {
+                android.util.Log.w("SingleGame", "assets/textures.zip not found in APK — skipping");
+                apk.close();
+                return;
+            }
+
+            try (InputStream zipStream = apk.getInputStream(texturesZipEntry);
+                 ZipInputStream zip = new ZipInputStream(zipStream)) {
+
+                ZipEntry entry;
+                byte[] buffer = new byte[1024 * 1024];
+
+                while ((entry = zip.getNextEntry()) != null) {
+                    File outFile = new File(targetDir, entry.getName()).getCanonicalFile();
+
+                    // Security: block path traversal
+                    if (!outFile.getPath().startsWith(targetDir.getCanonicalPath())) {
+                        zip.closeEntry();
+                        continue;
+                    }
+
+                    if (entry.isDirectory()) {
+                        outFile.mkdirs();
+                    } else {
+                        outFile.getParentFile().mkdirs();
+                        try (FileOutputStream out = new FileOutputStream(outFile)) {
+                            int len;
+                            while ((len = zip.read(buffer)) > 0) out.write(buffer, 0, len);
+                        }
+                    }
+
+                    zip.closeEntry();
+                }
+            }
+
+            apk.close();
+
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to extract textures", e);
         }
     }
 

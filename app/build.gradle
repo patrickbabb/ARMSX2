@@ -184,9 +184,7 @@ android {
         main {
             assets.srcDirs += ['../app_icons']
             jniLibs.srcDirs += ['src/main/jniLibs']
-            // res-local overlays res/ — place gitignored mipmap folders here to
-            // override the default launcher icons without touching committed assets.
-            res.srcDirs += ['src/main/res-local']
+            res.srcDirs = ['src/main/res-local', 'src/main/res']
             if (enableRN) {
                 java.srcDir 'src/reactnative/java'
             }

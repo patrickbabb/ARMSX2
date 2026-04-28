@@ -138,6 +138,7 @@ import java.util.stream.Collectors;
 import java.util.zip.Inflater;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 import kr.co.iefriends.pcsx2.BuildConfig;
 import kr.co.iefriends.pcsx2.NativeApp;
@@ -259,6 +260,20 @@ public class MainActivity extends AppCompatActivity {
 
     private int currentControllerMode = 0; // 0=2 Sticks, 1=1 Stick+Face, 2=D-Pad Only
 
+    private final ActivityResultLauncher<String> exportLauncher =
+            registerForActivityResult(
+                    new ActivityResultContracts.CreateDocument("application/zip"),
+                    uri -> { if (uri != null) exportSavesToUri(uri); }
+            );
+
+    private final ActivityResultLauncher<String[]> importLauncher =
+            registerForActivityResult(
+                    new ActivityResultContracts.OpenDocument(),
+                    uri -> { if (uri != null) importSavesFromUri(uri); }
+            );
+
+    private static final int QUICK_SAVE_SLOT = 9;
+
     // RadialGamePad overlay — replaces on-screen touch controls
     private kr.co.iefriends.pcsx2.input.RadialGamePadControllerView mRadialGamePad;
 
@@ -278,6 +293,202 @@ public class MainActivity extends AppCompatActivity {
         FrameLayout content = findViewById(android.R.id.content);
         if (content != null) content.addView(mRadialGamePad, params);
     }
+
+    private void showAdminMenu() {
+        String[] options = {
+                "Quick Save",
+                "Quick Load",
+                "Export Saves",
+                "Import Saves",
+                "Reset Game"
+        };
+
+        new MaterialAlertDialogBuilder(this)
+                .setItems(options, (dialog, which) -> {
+                    switch (which) {
+                        case 0: doQuickSave();   break;
+                        case 1: doQuickLoad();   break;
+                        case 2: doExportSaves(); break;
+                        case 3: doImportSaves(); break;
+                        case 4: confirmResetGame(); break;
+                    }
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    // ── Quick Save ──────────────────────────────────────────────────────────
+
+    private void doQuickSave() {
+        pauseVmForStateOperation();
+        boolean ok = NativeApp.saveStateToSlot(QUICK_SAVE_SLOT);
+        try {
+            Toast.makeText(this,
+                    ok ? "State Saved" : "Save failed",
+                    Toast.LENGTH_SHORT).show();
+        } catch (Throwable ignored) {}
+        resumeVmAfterStateOperation();
+    }
+
+    // ── Quick Load ──────────────────────────────────────────────────────────
+
+    private void doQuickLoad() {
+        if (!NativeApp.hasValidVm()) return;
+
+        pauseVmForStateOperation();
+        boolean ok = NativeApp.loadStateFromSlot(QUICK_SAVE_SLOT);
+        try {
+            Toast.makeText(this,
+                    ok ? "State Loaded" : "No save found",
+                    Toast.LENGTH_SHORT).show();
+        } catch (Throwable ignored) {}
+
+        // Always resume — even on failure — so the game doesn't stay paused
+        resumeVmAfterStateOperation();
+    }
+
+    // ── Export Saves ────────────────────────────────────────────────────────
+
+    private void doExportSaves() {
+        exportLauncher.launch("ARMSX2_SaveBackup.zip");
+    }
+
+    private void exportSavesToUri(android.net.Uri uri) {
+        if (!NativeApp.hasValidVm()) return;
+
+        pauseVmForStateOperation();
+
+        new Thread(() -> {
+            boolean success = false;
+            try {
+                android.content.ContentResolver cr = getContentResolver();
+                try (java.io.OutputStream out = cr.openOutputStream(uri);
+                     ZipOutputStream zip = new ZipOutputStream(out)) {
+
+                    File base = kr.co.iefriends.pcsx2.utils.DataDirectoryManager
+                            .getDataRoot(getApplicationContext());
+
+                    // Memory cards
+                    zipFolder(new File(base, "memcards"), "memcards", zip);
+                    // Save states (ARMSX2 uses "sstates")
+                    zipFolder(new File(base, "sstates"),  "sstates",  zip);
+                }
+                success = true;
+            } catch (Exception e) {
+                android.util.Log.e("AdminMenu", "Export failed", e);
+            }
+
+            final boolean ok = success;
+            runOnUiThread(() -> {
+                resumeVmAfterStateOperation();
+                try {
+                    Toast.makeText(this,
+                            ok ? "Saves exported successfully" : "Export failed",
+                            Toast.LENGTH_LONG).show();
+                } catch (Throwable ignored) {}
+            });
+        }, "AdminExport").start();
+    }
+
+    private void zipFolder(File folder, String zipParent, ZipOutputStream zip) {
+        if (folder == null || !folder.exists()) return;
+        File[] files = folder.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            String entryName = zipParent + "/" + f.getName();
+            if (f.isDirectory()) {
+                zipFolder(f, entryName, zip);
+            } else {
+                try {
+                    zip.putNextEntry(new ZipEntry(entryName));
+                    try (java.io.FileInputStream fis = new java.io.FileInputStream(f)) {
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = fis.read(buf)) > 0) zip.write(buf, 0, n);
+                    }
+                    zip.closeEntry();
+                } catch (Exception e) {
+                    android.util.Log.w("AdminMenu", "Skipping " + f.getName() + ": " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    // ── Import Saves ────────────────────────────────────────────────────────
+
+    private void doImportSaves() {
+        importLauncher.launch(new String[]{"application/zip"});
+    }
+
+    private void importSavesFromUri(android.net.Uri uri) {
+        if (!NativeApp.hasValidVm()) return;
+
+        pauseVmForStateOperation();
+
+        new Thread(() -> {
+            boolean success = false;
+            try {
+                File base = kr.co.iefriends.pcsx2.utils.DataDirectoryManager
+                        .getDataRoot(getApplicationContext());
+
+                try (java.io.InputStream in = getContentResolver().openInputStream(uri);
+                     java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(in)) {
+
+                    java.util.zip.ZipEntry entry;
+                    while ((entry = zis.getNextEntry()) != null) {
+                        File outFile = new File(base, entry.getName()).getCanonicalFile();
+
+                        // Security: ensure no path traversal
+                        if (!outFile.getPath().startsWith(base.getCanonicalPath())) {
+                            zis.closeEntry();
+                            continue;
+                        }
+
+                        if (entry.isDirectory()) {
+                            outFile.mkdirs();
+                        } else {
+                            outFile.getParentFile().mkdirs();
+                            try (java.io.FileOutputStream fos =
+                                         new java.io.FileOutputStream(outFile)) {
+                                byte[] buf = new byte[8192];
+                                int n;
+                                while ((n = zis.read(buf)) > 0) fos.write(buf, 0, n);
+                            }
+                        }
+                        zis.closeEntry();
+                    }
+                }
+                success = true;
+            } catch (Exception e) {
+                android.util.Log.e("AdminMenu", "Import failed", e);
+            }
+
+            final boolean ok = success;
+            runOnUiThread(() -> {
+                resumeVmAfterStateOperation();
+                try {
+                    Toast.makeText(this,
+                            ok ? "Saves imported successfully" : "Import failed",
+                            Toast.LENGTH_LONG).show();
+                } catch (Throwable ignored) {}
+            });
+        }, "AdminImport").start();
+    }
+
+    // ── Reset Game ──────────────────────────────────────────────────────────
+
+    private void confirmResetGame() {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Reset Game")
+                .setMessage("Are you sure you want to reset the game?")
+                .setPositiveButton("Reset", (d, w) -> {
+                    d.dismiss();
+                    restartEmuThread();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
 
     private final RetroAchievementsBridge.Listener retroAchievementsListener = new RetroAchievementsBridge.Listener() {
         @Override
@@ -3911,7 +4122,7 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     String p = m_szGamefile;
                     if (p != null && !p.isEmpty()) {
-                        Toast.makeText(this, "Launching: " + p, Toast.LENGTH_SHORT).show();
+                        //Toast.makeText(this, "Launching: " + p, Toast.LENGTH_SHORT).show();
                     }
                 } catch (Throwable ignored) {}
             });
@@ -4063,7 +4274,7 @@ public class MainActivity extends AppCompatActivity {
         } else {
             if (p_keyCode == KeyEvent.KEYCODE_BACK) {
                 if (!isHomeVisible()) {
-                    shutdownVmToHome();
+                    showAdminMenu();
                 } else {
                     finish();
                 }
@@ -4075,7 +4286,6 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-
     }
 
     @Override
@@ -4970,10 +5180,10 @@ public class MainActivity extends AppCompatActivity {
         if (d != null) d.setVisibility(vis);
         try {
             if (show) {
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
             } else {
                 if (TextUtils.isEmpty(m_szGamefile)) {
-                    setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+                    setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
                 } else {
                     setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
                 }
@@ -5150,7 +5360,7 @@ public class MainActivity extends AppCompatActivity {
     private final Runnable pendingLaunchRunnable = new Runnable() {
         @Override public void run() {
             if (pendingGameUri == null) return;
-            try { Toast.makeText(MainActivity.this, "Preflight: launching selected game…", Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
+            //try { Toast.makeText(MainActivity.this, "Preflight: launching selected game…", Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
             Uri toLaunch = pendingGameUri;
             pendingGameUri = null;
             handleSelectedGameUri(toLaunch);
@@ -5172,7 +5382,7 @@ public class MainActivity extends AppCompatActivity {
     private void bootBios() {
         m_szGamefile = "";
         showHome(false);
-        try { setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR); } catch (Throwable ignored) {}
+        try { setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE); } catch (Throwable ignored) {}
         try {
             lastInput = InputSource.TOUCH;
             lastTouchTimeMs = System.currentTimeMillis();
